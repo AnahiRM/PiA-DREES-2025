@@ -13,3 +13,39 @@ Deliverables:
 * Data management scripts (R & Python)
 * Analytical notebooks (EDA, validation, modeling)
 * Final report and presentation materials
+
+
+```
+PiA-DREES-2025/
+│
+├── README.md                <- Overview of the project, data, and usage.
+├── LICENSE                  <- Repository license (default: MIT).
+├── requirements.txt          <- Python dependencies for reproducibility.
+│
+├── data/
+│   ├── raw/                 <- Original datasets (SAE, Urgences, RPU, ARS/EDCD).
+│   ├── intermediate/        <- Cleaned or merged datasets.
+│   └── processed/           <- Final validated datasets ready for analysis.
+│
+├── docs/
+│   ├── meeting_notes/       <- Meeting summaries and project documentation.
+│   └── examples/            <- Jupyter notebooks showing how to use the code.
+│
+├── src/                     <- Core code for data processing and analysis.
+│   ├── exploratory/         <- Exploratory data analysis and initial checks.
+│   ├── features/            <- Scripts to generate derived variables (ratios, indicators).
+│   ├── models/              <- Statistical models, regressions, and risk analysis.
+│   └── validation/          <- Scripts for cross-checks (EDCD vs RPU vs Urgences).
+│
+├── reports/
+│   ├── figures/             <- Plots and visualizations.
+│   ├── tables/              <- Exported summary tables.
+│   └── outputs/             <- Generated reports (PDF, HTML, LaTeX).
+│
+├── edcd_pipeline/           <- LLM-assisted data collection pipeline.
+│   ├── scraper/             <- Scripts to query ARS websites and extract closure info.
+│   ├── parser/              <- Scripts to clean and structure extracted text.
+│   └── utils/               <- Helper functions (e.g., validation, logging).
+│
+└── app/                     <- (Optional) Dash or Streamlit app for visual exploration.
+```
