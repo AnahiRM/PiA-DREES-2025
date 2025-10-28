@@ -1,7 +1,5 @@
 ## Shortages of Medical Personnel in Emergency Departments and Unexpected Closures (DREES – Policy in Action 2025/26)
 
-Repository for the Policy in Action project conducted in collaboration between École Polytechnique (MSc Data & Economics for Public Policy) and DREES (Direction de la Recherche, des Études, de l’Évaluation et des Statistiques).
-
 The project investigates how staffing levels in French emergency departments relate to partial or full closures, using administrative data (SAE, Enquête Urgences, RPU) and a newly built Emergency Department Closures Database (EDCD) assisted by an LLM-based web collection pipeline.
 
 Main objectives:
