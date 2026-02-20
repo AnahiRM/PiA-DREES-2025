@@ -1397,6 +1397,13 @@ tensed_summary <- tensed_hospitals %>%
 
 tensed_summary
 
+# Save the tensed_summary table with gt
+tensed_summary %>%
+  gt() %>%
+  tab_header(title = "Distribution of the Tensed Hospitals") %>%
+  gtsave("../results/SAE_2024/tensed_hospitals_distribution.png")
+
+
 
 ```
 
