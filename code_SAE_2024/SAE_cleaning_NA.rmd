@@ -1,0 +1,529 @@
+---
+title: "SAE_cleaning_NA"
+author: "Louise Gatty"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+path = "/Users/Louise/Desktop/Master/M1/PiA-DREES-local/code"
+setwd(path)
+
+# Load necessary libraries ----
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(readr)
+library(httr)
+library(readr)
+library(janitor)
+library(tidyverse)
+library(stringr)
+library(purrr)
+library(ggplot2)
+library(sf)
+library(viridis)
+library(scales)
+library(tibble)
+```
+
+# Import datasets ----
+
+```{r cars, message=FALSE}
+SAE_2024 <- read_csv2("../data/intermediate/SAE_merged_short_2024.csv")
+Legend <- read_csv2("../docs/SAE_2024/Legends_short.csv")
+```
+
+# Data cleaning
+
+## Redefine juridical status
+
+```{r}
+SAE_2024 <- SAE_2024 %>%
+  # Create a new variable for juridical status
+  mutate(juridical_status = case_match(stjr,
+    1 ~ "Public",
+    2 ~ "Privé non lucratif",
+    3 ~ "Privé lucratif",
+  )) %>%
+  # Drop the initial juridical status variable
+  select(-stjr)
+```
+
+## Redefine establishment capacity
+
+Catr gives more information on the juridical status than on the establishment size. We prefer using the number of beds as an indicator of the size.
+
+We can use 2 figures: the number of beds in the emergency service and the number of beds in the whole establishment.
+
+Below, we try to use the number of beds in the whole establishment. The reasoning for it is that a lot of emergency services suffer from a lack of beds on the wards (medical, surgical) to transfer patients.
+
+```{r}
+# Import data that contains the overall number of beds
+usld <- read_csv2("../data/raw/SAE_2024/USLD_2024r.csv")
+
+# Create temporary dataframe of the joined data of SAE and usld
+temp <-  SAE_2024 %>%
+  left_join(usld, by = c("fi" = "FI"))
+
+# Compute percentage of NA values
+sum(is.na(temp$LIT)) / length(temp$LIT) * 100
+
+# Define function to group the NAs
+analyze_missing_pct <- function(data, group_var, target_var) {
+  data %>%
+    group_by({{ group_var }}) %>%
+    summarise(
+      missing_percentage = sum(is.na({{ target_var }})) / n() * 100
+    ) %>%
+    arrange(desc(missing_percentage))
+}
+
+# Apply to LIT
+analyze_missing_pct(temp, juridical_status, LIT)
+```
+
+The percentage of missing values for the overall number of beds is very high (74%), even for public hospitals (67%).
+
+The emergency beds number is rather an indicator of capacity of the emergency service. It does not exactly answer the same question, but it will allow us to identify the establishments for which the capacity is small but the flow is high.
+
+```{r}
+rm(usld)
+rm(temp)
+
+# Compute thresholds
+terciles <- quantile(SAE_2024$lit_uhcd, probs = c(0, 1/3, 2/3, 1), na.rm = TRUE)
+
+# Create categorical variable
+SAE_2024 <- SAE_2024 %>%
+  mutate(capacity = case_when(
+    lit_uhcd <= terciles[2] ~ "Low capacity",
+    lit_uhcd <= terciles[3] ~ "Medium capacity",
+    lit_uhcd >  terciles[3] ~ "High capacity"
+  )) %>%
+  # Lock the order
+  mutate(capacity = factor(capacity, 
+                                    levels = c("Low capacity", "Medium capacity", "High capacity")))
+
+# View establishments with NAs for the number of beds
+temp <- SAE_2024 %>%
+  #filter(is.na(lit_uhcd)) %>%
+  select(rs, catr, capacity, dep, passu, lit_uhcd)
+```
+
+Deleting these observations, even if there is a small number of them, would false (eg.: Vendée would loose its biggest hospital).
+We use the catr variable to impute the average number of beds of the same categories' establishments in the missing values.
+
+```{r}
+rm(temp)
+
+# Mean by catr
+mean_by_catr <- SAE_2024 %>%
+  group_by(catr) %>%
+  summarise(mean_lit_uhcd_catr = mean(lit_uhcd, na.rm = TRUE), .groups = "drop")
+
+# Global mean in case one of the catr has a 100% of NAs
+global_mean <- mean(SAE_2024$lit_uhcd, na.rm = TRUE)
+
+# Imputation
+SAE_2024 <- SAE_2024 %>%
+  left_join(mean_by_catr, by = "catr") %>%
+  mutate(
+    lit_uhcd_imp = if_else(
+      is.na(lit_uhcd),
+      # si mean du catr est NaN (groupe sans valeurs), on met la moyenne globale
+      if_else(is.nan(mean_lit_uhcd_catr), global_mean, mean_lit_uhcd_catr),
+      lit_uhcd
+    )
+  ) %>%
+  select(-mean_lit_uhcd_catr)
+
+# Recompute the terciles
+terciles_imp <- quantile(SAE_2024$lit_uhcd_imp, probs = c(0, 1/3, 2/3, 1), na.rm = TRUE)
+
+# Create categorical variable
+SAE_2024 <- SAE_2024 %>%
+  mutate(
+    capacity = case_when(
+      lit_uhcd_imp <= terciles_imp[2] ~ "Low capacity",
+      lit_uhcd_imp <= terciles_imp[3] ~ "Medium capacity",
+      lit_uhcd_imp >  terciles_imp[3] ~ "High capacity"
+    ),
+    # Lock in the order
+    capacity = factor(capacity,
+                      levels = c("Low capacity", "Medium capacity", "High capacity"))
+  ) %>%
+  # Drop lit_uhcd and catr
+  select(-lit_uhcd) %>%
+  select(-catr)
+
+# Remove temporary datasets
+rm(mean_by_catr)
+rm(terciles)
+rm(terciles_imp)
+```
+
+## Join with department and region geographical data
+
+```{r}
+# Import geojson files
+departments_geo <- st_read("../data/raw/departements.geojson")
+regions_geo <- st_read("../data/raw/regions.geojson")
+
+# Prepare region file for merging
+regions_to_join <- regions_geo %>% 
+  rename(region_geometry = geometry) %>% 
+  rename(region_name = nom) %>%
+  as.data.frame()
+
+# Prepare department file for merging
+departments_geo <- departments_geo %>%
+  rename(dep_geometry = geometry) %>%
+  rename(dep_name = nom)
+
+# Merge with region and department files
+SAE_2024 <- SAE_2024 %>%
+  left_join(departments_geo, by = c("dep" = "code")) %>%
+  left_join(regions_to_join, by = c("reg" = "code")) %>%
+  st_as_sf()
+```
+
+## Rename variables for clearer understanding
+
+```{r}
+# Rename the variables in SAE_2024
+SAE_2024 <- SAE_2024 %>%
+  rename(year = an) %>%
+  rename(finess = fi) %>%
+  rename(establishment_name = rs) %>%
+  rename(dep_number = dep) %>%
+  rename(region_number = reg) %>%
+  rename(town_name = nomcom) %>%
+  rename(postal_code = cpo) %>%
+  rename(emergency_type = urg) %>%
+  rename(total_emergency_visits = passu) %>% # total for a year
+  rename(total_hospitalized_emergency = dt_hosp) %>% # total for a year
+  rename(waiting_monitoring = stap) %>%
+  rename(beds_number = lit_uhcd_imp) %>% # installed as of December 31 in short-stay hospitalization units (UHCD)
+  rename(hours_physicians_total = hmed_tot) %>% # weekly average, Urgences + SMUR + SAMU
+  rename(hours_physicians_emergency = hmed_urg) %>% # weekly average, Urgences only
+  rename(hours_nurses_total = hide_tot) %>% # weekly average, Urgences + SMUR + SAMU
+  rename(hours_nurses_emergency = hide_urg) %>% # weekly average, Urgences only
+  rename(hours_paramedics_total = hamb_tot) %>% # weekly average, Urgences + SMUR + SAMU
+  rename(hours_regulation_physicians = hmr_tot) %>% # weekly average, Urgences + SMUR + SAMU
+  rename(hours_regulation_amu_phyisicians = hmramu_tot) %>% # weekly average, physicians participating in emergency medical assistance (aide médical d'urgence), Urgences + SMUR + SAMU
+  rename(hours_regulation_assistants = arm_tot) %>% # weekly average, Urgences + SMUR + SAMU
+  rename(hours_onsp = osnp_tot) %>% # weekly average, Non-scheduled healthcare operators (OSNP), Urgences + SMUR + SAMU
+  rename(joint_personnel_SMUR_emergency = com_smur_su) %>%
+  rename(etp_physicians_empl_total = etpsal_tot) %>%
+  rename(etp_physicians_empl_emergency = etpsal_urg) %>%
+  rename(number_physicians_liberal_total = efflib_tot) %>%
+  rename(number_physicians_liberal_emergency = efflib_urg) %>%
+  rename(number_medecine_interns = intmed) %>%
+  rename(number_emergency_interns = inturg) %>%
+  rename(number_medecine_junior_doctors = docju_med) %>%
+  rename(number_emergency_junior_doctors = docju_urg)
+  
+# Rearrange the order
+SAE_2024 <- SAE_2024 %>%
+  select(year, finess, establishment_name, juridical_status, capacity, region_number, region_name, region_geometry, dep_number, dep_name, dep_geometry, everything())
+
+# Remove the unnecessary datasets for the further cleaning
+rm(departments_geo, regions_geo, regions_to_join)
+```
+
+Overseas territories were not present in the geojson department file => we rewrite the names and geometry of the region in the department names, for departments 9A 9B 9C 9D 9F.
+
+```{r}
+# Identify overseas territories lines
+dom_indices <- which(str_detect(SAE_2024$dep_number, "^9[A-F]"))
+
+# Replace department name (NAs) by region name
+SAE_2024$dep_name[dom_indices] <- SAE_2024$region_name[dom_indices]
+
+# Idem for the geometry
+st_geometry(SAE_2024)[dom_indices] <- st_geometry(SAE_2024$region_geometry)[dom_indices]
+
+# Ensure that SAE_2024 is recognize as spatial 
+SAE_2024 <- SAE_2024 %>%
+  st_as_sf()
+
+rm(dom_indices)
+```
+
+## NAs
+
+```{r}
+# Count the percentage of missing values for each variable in SAE_2024
+missing_percentage <- colSums(is.na(SAE_2024)) / nrow(SAE_2024) * 100
+missing_percentage
+```
+
+### Explore patterns of NA observations
+
+#### Hours_regulation_physicians
+
+```{r}
+sum(is.na(SAE_2024$hours_regulation_physicians)) / length(SAE_2024$hours_regulation_physicians) * 100
+
+analyze_missing_pct(SAE_2024, capacity, hours_regulation_physicians)
+analyze_missing_pct(SAE_2024, juridical_status, hours_regulation_physicians)
+analyze_missing_pct(SAE_2024, region_name, hours_regulation_physicians)
+```
+Very high level of missing values (79%). A little less NAs in public/high capacity establishments. Missing values percentage of at least 50 % in 17 regions out of 18.
+Since the variable seems core for the analysis, we create a dummy for it.
+
+```{r}
+SAE_2024 <- SAE_2024 %>%
+  # Create dummy
+  mutate(dummy_regulation_physicians = if_else(is.na(hours_regulation_physicians), 0, 1)) %>%
+  # Replace the NAs by zero in the original variable
+  mutate(hours_regulation_physicians = replace_na(hours_regulation_physicians, 0))
+```
+
+#### Hours_paramedics_total
+
+```{r}
+sum(is.na(SAE_2024$hours_paramedics_total)) / length(SAE_2024$hours_paramedics_total) * 100
+
+analyze_missing_pct(SAE_2024, capacity, hours_paramedics_total)
+analyze_missing_pct(SAE_2024, juridical_status, hours_paramedics_total)
+```
+
+41 % of NAs overall.
+Seems to be missing for small/medium capacity and private establishments mainly, which makes sense => create dummy.
+
+```{r}
+SAE_2024 <- SAE_2024 %>%
+  # Create dummy
+  mutate(dummy_paramedics = if_else(is.na(hours_paramedics_total), 0, 1)) %>%
+  # Replace the NAs by zero in the original variable
+  mutate(hours_paramedics_total = replace_na(hours_paramedics_total, 0))
+```
+
+#### Hours_regulation_amu_phyisicians
+
+```{r}
+sum(is.na(SAE_2024$hours_regulation_amu_phyisicians)) / length(SAE_2024$hours_regulation_amu_phyisicians) * 100
+
+analyze_missing_pct(SAE_2024, capacity, hours_regulation_amu_phyisicians)
+analyze_missing_pct(SAE_2024, juridical_status, hours_regulation_amu_phyisicians)
+analyze_missing_pct(SAE_2024, region_name, hours_paramedics_total)
+```
+
+81% of NAs overall. No clear pattern (highly rate of missing values for public and high capacity establishments too, contrary to the previous variable).
+Variable does not seem essential => drop it.
+
+```{r}
+SAE_2024 <-  SAE_2024 %>%
+  select(-hours_regulation_amu_phyisicians)
+```
+
+
+#### Hours_regulation_assistants
+
+```{r}
+sum(is.na(SAE_2024$hours_regulation_assistants)) / length(SAE_2024$hours_regulation_assistants) * 100
+
+analyze_missing_pct(SAE_2024, capacity, hours_regulation_assistants)
+analyze_missing_pct(SAE_2024, juridical_status, hours_regulation_assistants)
+analyze_missing_pct(SAE_2024, region_name, hours_regulation_assistants)
+```
+
+79% of NAs overall. No very clear pattern. However the variable seems essential for the analysis => dummy.
+
+```{r}
+SAE_2024 <- SAE_2024 %>%
+  # Create dummy
+  mutate(dummy_regulation_assistants = if_else(is.na(hours_regulation_assistants), 0, 1)) %>%
+  # Replace the NAs by zero in the original variable
+  mutate(hours_regulation_assistants = replace_na(hours_regulation_assistants, 0))
+
+# Check for perfect colinarity with dummy_regulation_physicians
+cor(SAE_2024$dummy_regulation_physicians, SAE_2024$dummy_regulation_assistants)
+```
+
+0.96 correlation => highly correlated but not problematic for regression analysis.
+
+#### Hours_onsp
+
+```{r}
+sum(is.na(SAE_2024$hours_onsp)) / length(SAE_2024$hours_onsp) * 100
+
+analyze_missing_pct(SAE_2024, capacity, hours_onsp)
+analyze_missing_pct(SAE_2024, juridical_status, hours_onsp)
+analyze_missing_pct(SAE_2024, region_name, hours_onsp)
+```
+86% of NAs overall. No clear pattern. Variable seems less core for the analysis => drop it.
+
+```{r}
+SAE_2024 <-  SAE_2024 %>%
+  select(-hours_onsp)
+```
+
+
+#### Number_physicians_liberal_total and number_physicians_liberal_emergency
+
+```{r}
+# Number_physicians_liberal_total
+sum(is.na(SAE_2024$number_physicians_liberal_total)) / length(SAE_2024$number_physicians_liberal_total) * 100
+
+analyze_missing_pct(SAE_2024, capacity, number_physicians_liberal_total)
+analyze_missing_pct(SAE_2024, juridical_status, number_physicians_liberal_total)
+analyze_missing_pct(SAE_2024, region_name, number_physicians_liberal_total)
+```
+74% of NAs overall. 
+Very high level of NAs except for non lucrative private establishments. 100% missing for most overseas territories.
+The variable remains interesting since it's correlated to the juridical status => dummy.
+
+```{r}
+SAE_2024 <- SAE_2024 %>%
+  # Create dummy
+  mutate(dummy_number_liberal_phyisicians = if_else(is.na(number_physicians_liberal_total), 0, 1)) %>%
+  # Replace the NAs by zero in the original variable
+  mutate(number_physicians_liberal_total = replace_na(number_physicians_liberal_total, 0))
+```
+
+```{r}
+# Number_physicians_liberal_emergency
+sum(is.na(SAE_2024$number_physicians_liberal_emergency)) / length(SAE_2024$number_physicians_liberal_emergency) * 100
+
+analyze_missing_pct(SAE_2024, capacity, number_physicians_liberal_emergency)
+analyze_missing_pct(SAE_2024, juridical_status, number_physicians_liberal_emergency)
+analyze_missing_pct(SAE_2024, region_name, number_physicians_liberal_emergency)
+```
+75% of NAs overall. 
+Very high level of NAs except non lucrative private establishments. 100% missing for most overseas territories.
+
+```{r}
+SAE_2024 <- SAE_2024 %>%
+  # Create dummy
+  mutate(dummy_number_liberal_phyisicians_emergency = if_else(is.na(number_physicians_liberal_emergency), 0, 1)) %>%
+  # Replace the NAs by zero in the original variable
+  mutate(number_physicians_liberal_emergency = replace_na(number_physicians_liberal_emergency, 0))
+
+# Check for correlation with dummy_number_liberal_physicians
+cor(SAE_2024$dummy_number_liberal_phyisicians_emergency, SAE_2024$dummy_number_liberal_phyisicians)
+```
+
+0.98 correlation. Urgences only and Urgences+SMUR+SAMU are quasi similar for small establishments (no SMUR nor SAMU) => less information given by number_physicians_liberal_emergency in addition to dummy_number_liberal_physicians (and the other way around).
+
+=> drop number_physicians_liberal_emergency (since its percentage of NAs is 1 pp higher) and the associated dummy.
+
+```{r}
+SAE_2024 <-  SAE_2024 %>%
+  select(-c(dummy_number_liberal_phyisicians_emergency, number_physicians_liberal_emergency))
+```
+
+#### Joint_personnel_SMUR_emergency
+
+```{r}
+sum(is.na(SAE_2024$joint_personnel_SMUR_emergency)) / length(SAE_2024$joint_personnel_SMUR_emergency) * 100
+
+analyze_missing_pct(SAE_2024, capacity, joint_personnel_SMUR_emergency)
+analyze_missing_pct(SAE_2024, juridical_status, joint_personnel_SMUR_emergency)
+```
+
+37% of NAs overall.
+NAs mainly in private establishments, for which there's a high chance this question does not apply.
+Variable is interesting as a measurement of the workload of emergency personnel => dummy.
+
+```{r}
+SAE_2024 <- SAE_2024 %>%
+  # Create dummy
+  mutate(dummy_joint_personnel = if_else(is.na(joint_personnel_SMUR_emergency), 0, 1)) %>%
+  # Replace the NAs by zero in the original variable
+  mutate(joint_personnel_SMUR_emergency = replace_na(joint_personnel_SMUR_emergency, 0))
+```
+
+#### Interns
+
+```{r}
+# Medicine interns
+sum(is.na(SAE_2024$number_medecine_interns)) / length(SAE_2024$number_medecine_interns) * 100
+
+analyze_missing_pct(SAE_2024, capacity, number_medecine_interns)
+analyze_missing_pct(SAE_2024, juridical_status, number_medecine_interns)
+
+# Emergency interns
+sum(is.na(SAE_2024$number_emergency_interns)) / length(SAE_2024$number_emergency_interns) * 100
+
+analyze_missing_pct(SAE_2024, capacity, number_emergency_interns)
+analyze_missing_pct(SAE_2024, juridical_status, number_emergency_interns)
+```
+
+Smaller percentage of missing data for public and high capacity establishments. Missing data is likely to be due to the absence of interns in the establishment => dummy.
+
+```{r}
+# Medecine interns
+SAE_2024 <- SAE_2024 %>%
+  # Create dummy
+  mutate(dummy_medecine_interns = if_else(is.na(number_medecine_interns), 0, 1)) %>%
+  # Replace the NAs by zero in the original variable
+  mutate(number_medecine_interns = replace_na(number_medecine_interns, 0))
+
+# Emergency interns
+SAE_2024 <- SAE_2024 %>%
+  # Create dummy
+  mutate(dummy_emergency_interns = if_else(is.na(number_emergency_interns), 0, 1)) %>%
+  # Replace the NAs by zero in the original variable
+  mutate(number_emergency_interns = replace_na(number_emergency_interns, 0))
+
+# Check correlation between the dummies
+cor(SAE_2024$dummy_emergency_interns, SAE_2024$dummy_medecine_interns)
+```
+
+0.59 correlation. We keep both dummies.
+
+#### Junior doctors
+
+```{r}
+# Medicine junior doctors
+sum(is.na(SAE_2024$number_medecine_junior_doctors)) / length(SAE_2024$number_medecine_junior_doctors) * 100
+
+analyze_missing_pct(SAE_2024, capacity, number_medecine_junior_doctors)
+analyze_missing_pct(SAE_2024, juridical_status, number_medecine_junior_doctors)
+
+# Emergency junior doctors
+sum(is.na(SAE_2024$number_emergency_junior_doctors)) / length(SAE_2024$number_emergency_junior_doctors) * 100
+
+analyze_missing_pct(SAE_2024, capacity, number_emergency_junior_doctors)
+analyze_missing_pct(SAE_2024, juridical_status, number_emergency_junior_doctors)
+```
+
+51% and 71% missing values. Low (medicine) or lower (emergency) percentage for public establishments => dummy.
+
+```{r}
+# Medecine junior doctors
+SAE_2024 <- SAE_2024 %>%
+  # Create dummy
+  mutate(dummy_medecine_junior_doctors = if_else(is.na(number_medecine_junior_doctors), 0, 1)) %>%
+  # Replace the NAs by zero in the original variable
+  mutate(number_medecine_junior_doctors = replace_na(number_medecine_junior_doctors, 0))
+
+# Emergency junior doctors
+SAE_2024 <- SAE_2024 %>%
+  # Create dummy
+  mutate(dummy_emergency_junior_doctors = if_else(is.na(number_emergency_junior_doctors), 0, 1)) %>%
+  # Replace the NAs by zero in the original variable
+  mutate(number_emergency_junior_doctors = replace_na(number_emergency_junior_doctors, 0))
+
+# Check correlation between the dummies
+cor(SAE_2024$dummy_medecine_junior_doctors, SAE_2024$dummy_emergency_junior_doctors)
+```
+
+0.56 correlation. We keep both dummies.
+
+# Save cleaned dataset ----
+
+```{r}
+# Drop geometrical variables for export
+SAE_2024 <-  SAE_2024 %>%
+  select(-region_geometry) %>%
+  select(-dep_geometry)
+
+# Export to csv
+SAE_2024 %>%
+  st_drop_geometry() %>% 
+  write_csv2("../data/intermediate/SAE_cleaned_NA_2024.csv")
+```

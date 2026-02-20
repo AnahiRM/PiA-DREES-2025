@@ -1,0 +1,350 @@
+---
+title: "SAE_analysis"
+author: "Louise Gatty"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+# Set up ----
+
+```{r setup, message=FALSE}
+rm(list=ls())
+
+path = "/Users/Louise/Desktop/Master/M1/PiA-DREES-local/code"
+setwd(path)
+
+# Load necessary libraries ----
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(readr)
+library(httr)
+library(readr)
+library(janitor)
+library(tidyverse)
+library(stringr)
+library(purrr)
+library(ggplot2)
+library(sf)
+library(viridis)
+library(scales)
+```
+
+
+# Import datasets ----
+
+```{r cars, message=FALSE}
+SAE_2024 <- read_csv2("../data/processed/SAE_final_2024.csv")
+Legend <- read_csv2("../docs/SAE_2024/Legends_short.csv")
+```
+
+# Descriptive statistics: emergency services offer ----
+
+## Are emergencies mostly public?
+
+```{r, message = TRUE}
+# Count the number of emergency services by status
+status_counts <- SAE_2024 %>%
+  group_by(juridical_status) %>%
+  summarise(count = n())
+
+status_counts
+```
+
+## Are there mostly CHU/CHRs or smaller hospitals?
+
+```{r}
+# Count the number of emergency services by size
+size_counts <- SAE_2024 %>%
+  group_by(size_es) %>%
+  summarise(count = n())
+```
+
+## How are emergency services distributed geographically?
+
+```{r}
+# Count the number of emergency services by department
+department_counts <- SAE_2024 %>%
+  st_drop_geometry() %>%
+  group_by(nom_dep) %>%
+  summarise(count = n(), .groups = "drop")
+
+summary(department_counts)
+```
+
+
+```{r}
+# Aggregate the number of emergency services by department for mapping
+map_data_es <- SAE_2024 %>%
+  group_by(dep, nom_dep) %>%
+  summarise(total_es = n(), .groups = "drop")
+
+ggplot(data = map_data_es) +
+  geom_sf(aes(fill = total_es), color = "white", size = 0.2) +
+  scale_fill_viridis_c(
+    option = "magma", 
+    name = "Number of services",
+    #breaks = c(1, 5, 10, 15, 20),
+    #labels = c("1", "5", "10", "15", "20+")
+  ) +
+  labs(
+    title = "Distribution of emergency services",
+    subtitle = "Year 2024",
+    caption = "Source : SAE – DREES"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid = element_blank()
+  )
+```
+
+
+# Descriptive statistics: medical activity ----
+## How many passages in emergency services in a year?
+
+```{r}
+# Summary statistics for the number of passages in emergency services in a year
+summary(SAE_2024$passu)
+sd(SAE_2024$passu)
+```
+
+## How does the number of visits vary by establishment size?
+
+```{r}
+# Number of emergency visits by department
+visits_count <- SAE_2024 %>%
+  group_by(size_es) %>%
+  summarise(total_passages = sum(passu, na.rm = TRUE))
+
+# Summary statistics for the number of passages in emergency services in a year by establishment size
+activity_by_size <- SAE_2024 %>%
+  group_by(size_es) %>%
+  summarise(
+    n_hospitals = n(),
+    mean_passages = mean(passu, na.rm = TRUE),
+    sd_passages = sd(passu, na.rm = TRUE),
+    median_passages = median(passu, na.rm = TRUE),
+    min_passages = min(passu, na.rm = TRUE),
+    max_passages = max(passu, na.rm = TRUE)
+  )
+
+activity_by_size
+
+# Visualization of the number of passages by establishment size
+ggplot(SAE_2024, aes(x = size_es, y = passu, fill = size_es)) +
+  geom_boxplot() +
+  labs(title = "Distribution du nombre de passages par an selon la taille de l'établissement",
+       y = "Nombre de passages par an",
+       x = "Taille de l'établissement") +
+  theme_minimal()
+```
+
+## How does the number of passages vary by department?
+
+```{r}
+# Summary statistics for the number of passages in emergency services in a year by department
+activity_by_department <- SAE_2024 %>%
+  group_by(nom_dep) %>%
+  summarise(
+    n_hospitals = n(),
+    mean_passages = mean(passu, na.rm = TRUE),
+    sd_passages = sd(passu, na.rm = TRUE),
+    median_passages = median(passu, na.rm = TRUE),
+    min_passages = min(passu, na.rm = TRUE),
+    max_passages = max(passu, na.rm = TRUE)
+  )
+
+# Number of emergency visits by department
+visits_count <- SAE_2024 %>%
+  st_drop_geometry() %>% 
+  group_by(dep) %>%
+  summarise(total_passages = sum(passu, na.rm = TRUE), .groups = "drop")
+  
+# Join with geo data for mapping
+map_data_passages <- departments_geo %>%
+  left_join(visits_count, by = c("code" = "dep"))
+
+ggplot(data = map_data_passages) +
+  geom_sf(aes(fill = total_passages), color = "white", size = 0.1) +
+  scale_fill_viridis_c(
+    option = "magma",
+    name = "Number of visits (in a year)",
+    labels = label_number(big.mark = " ", suffix = " pts")
+  ) +
+  labs(
+    title = "Distribution of emergency service visits",
+    subtitle = "Year 2024",
+    caption = "Source : SAE – DREES"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid = element_blank()
+  )
+```
+
+
+# Descriptive statistics: tension indicators ----
+
+# What is the number of patients per doctor (in a year)?
+
+```{r}
+# Convert passu to number/day
+SAE_2024 <- SAE_2024 %>%
+  mutate(
+    passu_day = passu / 365
+  )
+
+# Create ratio variable
+SAE_2024 <- SAE_2024 %>%
+  mutate(
+    patients_per_doctor = ifelse(etpsal_urg > 0, passu_day / etpsal_urg, NA)
+  )
+
+# Summary statistics for the number of patients per doctor in a year (exclude NAs/Infs)
+summary(SAE_2024$patients_per_doctor[is.finite(SAE_2024$patients_per_doctor)])
+#sd(SAE_2024$patients_per_doctor[is.finite(SAE_2024$patients_per_doctor)])
+
+# Création du boxplot
+ggplot(SAE_2024) +
+  aes(x = size_es, y = patients_per_doctor, fill = size_es) +
+  geom_boxplot(outlier.color = "red", outlier.shape = 1) +
+  # On limite l'affichage à 100 pour y voir quelque chose, 
+  # tout en gardant les données en mémoire
+  coord_cartesian(ylim = c(0, 100)) + 
+  labs(
+    title = "Distribution de la charge de travail par médecin (par jour)",
+    subtitle = "Zoom sur la zone 0-100 patients/jour (les points rouges sont des outliers)",
+    x = "Taille de l'établissement",
+    y = "Nombre de patients / jour / ETP médical",
+    fill = "Catégorie"
+  ) +
+  theme_minimal()
+```
+
+# How does the number of patients per doctor vary by establishment size?
+
+```{r}
+# Summary statistics for the number of patients per doctor in a year by establishment size
+activity_ratio_by_size <- SAE_2024 %>%
+  group_by(size_es) %>%
+  summarise(
+    n_hospitals = n(),
+    mean_ratio = mean(patients_per_doctor, na.rm = TRUE),
+    sd_ratio = sd(patients_per_doctor, na.rm = TRUE),
+    median_ratio = median(patients_per_doctor, na.rm = TRUE),
+    min_ratio = min(patients_per_doctor, na.rm = TRUE),
+    max_ratio = max(patients_per_doctor, na.rm = TRUE)
+  )
+
+activity_ratio_by_size
+
+# Visualization of the number of patients per doctor by establishment size
+ggplot(SAE_2024, aes(x = size_es, y = patients_per_doctor, fill = size_es)) +
+  geom_boxplot() +
+  # Limit Y values
+  coord_cartesian(ylim = c(0, 10000)) +
+  labs(title = "Distribution of the number of emergency visits per doctor, by establishment size",
+       y = "Visits per doctor, in a year",
+       x = "Establishment size") +
+  theme_minimal()
+```
+
+
+# How does the number of patients per doctor vary by department?
+
+```{r}
+# Number of visits per doctor, by department
+ratio_data <- SAE_2024 %>%
+  st_drop_geometry() %>%
+  group_by(dep) %>%
+  summarise(
+    total_passu = sum(passu, na.rm = TRUE),
+    total_doctors = sum(etpsal_urg, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(patients_per_doctor = total_passu / total_doctors)
+
+# Join with geo data for mapping
+map_data_ratio <- departments_geo %>%
+  left_join(ratio_data, by = c("code" = "dep"))
+
+# Visualization of patients per doctor by department
+ggplot(data = map_data_ratio) +
+  geom_sf(aes(fill = patients_per_doctor), color = "white", size = 0.1) +
+  scale_fill_viridis_c(
+    option = "magma",
+    name = "Visits / Doctors",
+    na.value = "grey90",
+    labels = label_number(big.mark = " ")
+  ) +
+  labs(
+    title = "Distribution of the number of emergency visits per doctor, in a year",
+    subtitle = "Year 2024",
+    caption = "Source : SAE – DREES"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid = element_blank()
+  )
+```
+
+# Bivariate analysis ----
+
+```{r}
+# Create table of the ratio of patients per doctor by establishment status (public, privé non lucratif, privé lucratif)
+table_by_status <-  SAE_2024 %>%
+  group_by(es_status) %>%
+  summarise(
+    nb_services = n(),
+    mediane_passages = median(passu, na.rm = TRUE),
+    mediane_ratio = median(patients_per_doctor, na.rm = TRUE),
+    .groups = 'drop'
+  )
+
+# Visualization
+ggplot(SAE_2024, aes(x = es_status, y = patients_per_doctor, fill = es_status)) +
+  geom_boxplot() +
+  # Limit Y values
+  coord_cartesian(ylim = c(0, 10000)) + 
+  labs(
+    title = "Medical tension: public versus private emergengy services",
+    subtitle = "Year 2024",
+    x = "Juridical status",
+    y = "Visits per doctor, in a year",
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+
+```{r}
+# Create table of the ratio of patients per doctor by emergency type (general, pediatric)
+table_by_type <-  SAE_2024 %>%
+  group_by(urg) %>%
+  summarise(
+    nb_services = n(),
+    mediane_passages = median(passu, na.rm = TRUE),
+    mediane_ratio = median(patients_per_doctor, na.rm = TRUE),
+    .groups = 'drop'
+  )
+
+# Visualization
+ggplot(SAE_2024, aes(x = urg, y = patients_per_doctor, fill = urg)) +
+  geom_boxplot() +
+  # Limit Y values
+  coord_cartesian(ylim = c(0, 10000)) + 
+  labs(
+    title = "Medical tension: general versus pediatric emergency services",
+    subtitle = "Year 2024",
+    x = "Type of emergency service",
+    y = "Visits per doctor, in a year",
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```

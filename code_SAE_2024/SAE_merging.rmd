@@ -1,0 +1,347 @@
+---
+title: "SAE_cleaning"
+author: "Louise Gatty"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+# Set up ----
+
+```{r setup, include=FALSE}
+path = "/Users/Louise/Desktop/Master/M1/PiA-DREES-local/code"
+setwd(path)
+
+# Load necessary libraries ----
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(readr)
+library(httr)
+library(jsonlite)
+library(readr)
+library(janitor)
+library(tidyverse)
+library(stringr)
+library(purrr)
+```
+
+# Import 2024 datasets ----
+
+```{r cars, message=FALSE}
+identification1 <- read_delim("../data/raw/SAE_2024/ID_2024r.csv", delim = ";", locale = locale(decimal_mark = "."))
+
+identification2 <- read_delim("../data/raw/SAE_2024/IDB_2024r.csv", delim = ";", locale = locale(decimal_mark = "."))
+
+urgences1 <- read_delim("../data/raw/SAE_2024/URGENCES_2024r.csv", delim = ";", locale = locale(decimal_mark = "."))
+
+urgences2 <- read_delim("../data/raw/SAE_2024/URGENCES2_2024r.csv", delim = ";", locale = locale(decimal_mark = "."))
+
+personnel_urg1 <- read_delim("../data/raw/SAE_2024/PCAMEDURG_2024r.csv", delim = ";", locale = locale(decimal_mark = "."))
+
+personnel_urg2 <- read_delim("../data/raw/SAE_2024/PCAMEDURG_P_2024r.csv", delim = ";", locale = locale(decimal_mark = "."))
+
+personnel_all <- read_delim("../data/raw/SAE_2024/Q20_2024r.csv", delim = ";", locale = locale(decimal_mark = "."))
+
+personnel_interns <- read_delim("../data/raw/SAE_2024/Q22_2024r.csv", delim = ";", locale = locale(decimal_mark = "."))
+
+synthesis <- read_delim("../data/raw/SAE_2024/SYGEN_2024r.csv", delim = ";", locale = locale(decimal_mark = "."))
+```
+
+
+# Clean and merge all 2024 tables ----
+
+## identification1 & identification2
+
+```{r, message=FALSE}
+# Remove unnecessary columns
+identification1 <- identification1 %>%
+  select(-c("bor", "rscom", "grp", "espic", "ccr", "nat", "sir", "reg_diff", "dep_diff", "ARMT", "ETAT_SAISIE", "VAGUE", "PROVENANCE", "NUMVOI", "TYPVOI", "NOMVOI", "BP", "COMPD", "FILIALE0", "SIRTET", "RSTET", "MODEJ", "FINRAT"), -starts_with(c("FIAUT", "RSAUT", "DADS_", "TYPMD", "FIFU", "SCFU", "VAL", "RESPREG")))
+
+identification2 <- identification2 %>%
+  select(-c("BOR", "GRP", "ESPIC", "CCR", "NAT", "SIR", "ARMT", "VAGUE", "NUMTEL", "COMPRS", "NUMVOI", "TYPVOI", "ADRVOIENOM", "COMPDist", "ADRLIBCOM", "COMINSEE", "ADRBP"))
+
+# Standardize column names
+identification1 <- janitor::clean_names(identification1)
+identification2 <- janitor::clean_names(identification2)
+
+# Harmonize column names and add a source column
+identification2 <- identification2 %>%
+  rename(cpo = adrcpost) %>%
+  mutate(source = "id2")
+identification1 <- identification1 %>%
+  mutate(source = "id1")
+
+# Convert stj to a character in identification2
+identification2 <- identification2 %>%
+  mutate(stj = as.character(stj))
+
+# Combine both identification tables
+identification <- bind_rows(identification1, identification2)
+```
+
+## urgences1
+
+```{r, message=FALSE}
+# Remove unnecessary columns
+urgences1 <- urgences1 %>%
+  select(-"BOR")
+
+# Standardize column names
+urgences1 <- janitor::clean_names(urgences1)
+
+# Check that all the FINESS numbers in urgences1 are in identification
+all(urgences1$fi %in% identification$fi)
+
+# Check that no table has duplicates
+n_distinct(urgences1$fi, na.rm = TRUE) ==
+  sum(!is.na(urgences1$fi))
+n_distinct(identification$fi, na.rm = TRUE) ==
+  sum(!is.na(identification$fi))
+
+# Check NAs
+sum(is.na(urgences1$fi))
+sum(is.na(identification$fi))
+
+# Print columns that are in both tables
+intersect(names(urgences1), names(identification))
+
+urgences1 <- urgences1 %>%
+  janitor::clean_names() %>%
+  # Pivot longer to have one row per type of emergency activity (general or pediatric) and per medical structure
+  pivot_longer(
+    cols = c(autgen, autped), 
+    names_to = "urg_type", 
+    values_to = "passu_check"
+  ) %>%
+  # Harmonize the "urg" variable to have the same values for both types of emergency activity (general or pediatric)
+  mutate(urg = case_when(
+    urg_type == "autgen" ~ "GEN",
+    urg_type == "autped" ~ "PED",
+    TRUE ~ NA_character_
+  )) %>%
+  # Keep only the rows where passu_check is not NA and > 0
+  filter(!is.na(passu_check) & passu_check > 0)
+
+# Merge and get rid of possible duplicates
+SAE_main <- identification %>%
+  inner_join(
+    urgences1 %>%
+      select(-any_of(setdiff(intersect(names(urgences1), names(identification)), "fi"))),
+    by = "fi"
+  )
+
+# Check that some rows have id2 source
+SAE_main %>%
+  filter(source == "id2") %>%
+  nrow() # 0
+
+# Remove "source" column
+SAE_main <- SAE_main %>%
+  select(-"source")
+```
+
+## urgences2
+
+```{r, message=FALSE}
+# Remove unnecessary columns
+urgences2 <- urgences2 %>%
+  select(-c("BOR", "CONVURG24", "FICONV", "IMPL_SMUR_SITE"), -starts_with(c("OUV_", "AMPL_")))
+
+# Standardize column names
+urgences2 <- janitor::clean_names(urgences2)
+
+# Check that all the FINESS numbers are in both tables
+all(SAE_main$fi %in% urgences2$fi)
+
+# Print columns that are in both tables
+intersect(names(SAE_main), names(urgences2))
+
+# Rename column that has the same name but a different meaning
+urgences2 <- urgences2 %>%
+  rename(regulation = reg)
+
+# Merge and get rid of possible duplicates
+SAE_main <- SAE_main %>%
+  inner_join(
+    urgences2 %>%
+      select(-any_of(setdiff(intersect(names(urgences2), names(SAE_main)), c("fi", "urg")))),
+    by = c("fi", "urg")
+  )
+```
+
+NB: The following variables were dropped because of a too small number of observations (even if they were interesting):
+IMPL_SMUR_SITE	Disposez-vous d’une implantation SMUR sur le même site ou avez-vous une convention/organisation formalisée ?
+CONVURG24	Etes-vous conventionné avec une structure des urgences H24 ?
+FICONV	Si oui, FINESS géographique de la structure des urgences (autorisée H24) signataire de la convention
+OUV_SEMAINE	Êtes-vous ouvert du lundi au vendredi ?
+AMPL_SEMAINE	Quelle est votre amplitude horaire journalière moyenne du lundi au vendredi ?
+OUV_SAM	Êtes-vous ouvert le samedi ?
+AMPL_SAM	Quelle est votre amplitude horaire moyenne le samedi ?
+OUV_DIMFERIE	Êtes-vous ouvert le dimanche et les jours fériés ?
+AMPL_DIMFERIE	Quelle est votre amplitude horaire journalière moyenne le dimanche et les jours fériés ?
+
+## personnel_urg1
+
+```{r, message=FALSE}
+# Remove unnecessary columns
+personnel_urg1 <- personnel_urg1 %>%
+  select(-c("BOR"))
+
+# Standardize column names
+personnel_urg1 <- janitor::clean_names(personnel_urg1)
+
+# Print columns that are in both tables
+intersect(names(personnel_urg1), names(SAE_main))
+
+# Merge and get rid of possible duplicates
+SAE_main <- SAE_main %>%
+  left_join( # keep the medical structure even if it has no personnel_urg1 data
+    personnel_urg1 %>%
+      select(-any_of(setdiff(intersect(names(SAE_main), names(personnel_urg1)), "fi"))),
+    by = "fi"
+  )
+```
+
+## personnel_urg2
+
+```{r}
+# Remove unnecessary columns
+personnel_urg2 <- personnel_urg2 %>%
+  select(-"BOR")
+
+# Keep only the rows where PERSO = "M9999" (total personnel medical)
+personnel_urg2 <- personnel_urg2 %>%
+  filter(PERSO == "M9999")
+
+# Remove "PERSO" and "MOD" columns
+personnel_urg2 <- personnel_urg2 %>%
+  select(-c("PERSO", "MOD"))
+
+# Standardize column names
+personnel_urg2 <- janitor::clean_names(personnel_urg2)
+
+# Print columns that are in both tables
+intersect(names(personnel_urg2), names(SAE_main))
+
+# Merge and get rid of possible duplicates
+SAE_main <- SAE_main %>%
+  left_join( # keep the medical structure even if it has no personnel_urg2 data
+    personnel_urg2 %>%
+      select(-any_of(setdiff(intersect(names(SAE_main), names(personnel_urg2)), "fi"))),
+    by = "fi"
+  )
+```
+
+## personnel_interns
+
+```{r}
+personnel_interns <- personnel_interns %>%
+  select(-"BOR")
+
+# Standardize column names
+personnel_interns <- janitor::clean_names(personnel_interns)
+
+# Print columns that are in both tables
+intersect(names(personnel_interns), names(SAE_main))
+
+# Merge and get rid of possible duplicates
+SAE_main <- SAE_main %>%
+  left_join( # keep the medical structure even if it has no interns
+    personnel_interns %>%
+      select(-any_of(setdiff(intersect(names(SAE_main), names(personnel_interns)), "fi"))),
+    by = "fi"
+  )
+```
+
+## personnel_all
+
+```{r, message=FALSE}
+# Standardize column names
+personnel_all <- janitor::clean_names(personnel_all)
+
+# Keep only useful columns
+personnel_all <- personnel_all %>%
+  select(c("fi", "perso", "effsalplh", "effsalplf", "effsalpah", "effsalpaf", "efflibplh", "efflibplf", "efflibpah", "efflibpaf", "etpsalh", "etpsalf", "effsal", "etpsal", "efflib"))
+
+# Keep only the observations if they correspond to a FINESS for which perso = "M1340" (médecine d'urgence)
+personnel_all <- personnel_all %>%
+  group_by(fi) %>%
+  filter(any(perso == "M1340")) %>%
+  ungroup() %>%
+  filter(perso %in% c("M1340", "M9999"))
+
+# Create new variables from the information in observations where perso = "M9999" (total personnel medical)
+personnel_all <-  personnel_all %>%
+  pivot_wider(
+    names_from = perso,
+    values_from = where(is.numeric)
+  ) %>%
+  rename_with(~ paste0("tot_", gsub("_M9999", "", .x)), ends_with("_M9999")) %>%
+  rename_with(~ gsub("_M1340", "", .x), ends_with("_M1340")) %>%
+  group_by(fi) %>%
+  summarise(across(everything(), ~ first(na.omit(.x))), .groups = "drop")
+```
+
+Legend of the remaining columns:
+- EFFSALPLH = effectif des personnels salariés temps plein hommes
+- EFFSALPLF = effectif des personnels salariés temps plein femmes
+- EFFSALPAH = effectif des personnels salariés stemps partiel hommes
+- EFFSALPAF = effectif des personnels salariés stemps partiel femmes
+- EFFLIBPLH = effectif des praticiens libéraux temps plein hommes
+- EFFLIBPLF = effectif des praticiens libéraux temps plein femmes
+- EFFLIBPAH = effectif des praticiens libéraux temps partiel hommes
+- EFFLIBPAF = effectif des praticiens libéraux temps partiel femmes
+- ETPSALH = ETP moyen annuel total des personnels salariés hommes
+- ETPSALF = ETP moyen annuel total des personnels salariés femmes
+- EFFSAL = effectif des personnels salariés total (somme des quatre EFFSAL)
+- ETPSAL = somme de ETPSALH et ETPSALF
+- EFFLIB = effectif des praticiens libéraux total (somme de tous les EFFLIB)
+
+We choose not to include personnel_all in the final dataset since it does not represent the effective medical staff dedicated to the emergency services, contrarly to personnel_urg1 and personnel_urg2.
+
+## synthesis
+
+```{r}
+columns_to_keep = c("FI", "FI_EJ", "AN", "ANT", "AUTGEN", "AUTPED", "EFFSAL_TOT", "EFFSAL_DT_URG", "EFFLIB_TOT", "EFFLIB_DT_URG", "PASSU_GEN", "PASSU_PED", "EFFPNM_TOT_PNM", "ETPSAL_DT_URG", "ETPSAL_TOT", "ETPPNM_TOT_PNM")
+
+synthesis <- synthesis %>%
+  select(columns_to_keep)
+
+# Standardize column names
+synthesis <- janitor::clean_names(synthesis)
+
+# Print columns that are in both tables
+intersect(names(synthesis), names(SAE_main))
+```
+
+Idem.
+
+# Export final cleaned dataset ----
+
+```{r}
+write_csv2(SAE_main, "../data/intermediate/SAE_merged_2024.csv")
+```
+
+# Create a less exhaustive dataset ----
+
+```{r}
+# Keep only relevant columns for descriptive statistics
+SAE_short_2024 <- SAE_main %>%
+  select(
+    # identification variables
+    an, fi, rs, catr, stjr, rs, reg, dep, nomcom, cpo,
+    # activity variables
+    urg, regulation, passu, dt_hosp, stap, lit_uhcd,
+    # urgences' personnel variables – number of hours
+    hmed_tot, hmed_urg, hide_tot, hide_urg, hamb_tot, hmr_tot, hmramu_tot, arm_tot, osnp_tot, com_smur_su,
+    # urgences' personnel variables – ETPs and effectifs
+    etpsal_tot, etpsal_urg, efflib_tot, efflib_urg,
+    # interns effectifs variables
+    intmed, docju_med, inturg, docju_urg,
+    # synthesis variables
+    efflib_tot, etpsal_tot
+  )
+# Export less exhaustive dataset
+write_csv2(SAE_short_2024, "../data/intermediate/SAE_merged_short_2024.csv")
+```
+

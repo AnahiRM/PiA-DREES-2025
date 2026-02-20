@@ -1,0 +1,40 @@
+old_name;new_name;Signif (french);Signif (english);Modalities
+an;year;année;year;
+fi;finess;FINESS;FINESS number;
+rs;establishment_name;raison sociale;name;
+catr;juridical_status;catégorie d'établissement;category (CHU, CH…);
+stjr;establishment_size;statut juridique;juridical status;1 : Public, 2 : Privé lucratif, 3 : Privé non lucratif
+reg;region;région;region (code);
+dep;dep_number;département;department (code);
+nomcom;town_name;nom de la commune;name of the commune;
+cpo;postal_code;code postal;postal code;
+urg;emergency_type;type d'urgence;type of emergency (general or pediatric);
+regulation;regulation;L'accès aux urgences est-il régulé (pas d'accès libre et direct des patients) ?;is the emergency service regulated?;3: Yes, all the time, 2: Yes, part of the time, 1: No
+passu;total_emergency_visits;Nombre de passages aux urgences dans l'année;number of visits in the year;
+dt_hosp;total_hospitalized_emergency;Dont hospitalisés;whose been hospitalized;
+stap;waiting_monitoring;Existe-t-il un suivi des temps d’attente et de passage ?;Is there any monitoring of waiting and processing times?;1: Yes, 0: No
+lit_uhcd;beds_number;Nombre de lits installés au 31/12 en unité d'hospitalisation de courte durée (UHCD);number of beds installed as of December 31 in short-stay hospitalization units (UHCD);
+hmed_tot;hours_physicians_total;Nombre hebdomadaire moyen d'heures postées sur l'année - Médecins - Total médecine d'urgence;Average weekly number of hours posted over the year - Physicians - Total emergency medicine;
+hmed_urg;hours_physicians_emergency;Nombre hebdomadaire moyen d'heures postées sur l'année - Médecins - dont structure des urgences;Average weekly number of hours worked over the year - Physicians - emergency department structure;
+hide_tot;hours_nurses_total;Nombre hebdomadaire moyen d'heures postées sur l'année - IDE - Total médecine d'urgence;Average weekly number of hours posted over the year - Registered Nurse - Total emergency medicine;
+hide_urg;hours_nurses_emergency;Nombre hebdomadaire moyen d'heures postées sur l'année - IDE - dont structure des urgences;Average weekly number of hours posted over the year - Registered Nurse - emergency department structure;
+hamb_tot;hours_paramedics_total;Nombre hebdomadaire moyen d'heures postées sur l'année - Ambulanciers (ou faisant fonction) - Total médecine d'urgence;Average weekly number of hours posted over the year - Paramedics (or acting as such) - Total emergency medicine;
+hmr_tot;hours_regulation_physicians;Nombre hebdomadaire moyen d'heures postées sur l'année - Médecins régulateurs (hors internes) - Total médecine d'urgence;Average weekly number of hours posted over the year - On-call physicians (excluding interns) - Total emergency medicine;
+hmramu_tot;hours_regulation_amu_phyisicians;Nombre hebdomadaire moyen d'heures postées sur l'année - dont médecins régulateurs hospitaliers participant à l'aide médicale urgente - Total médecine d'urgence;Average weekly number of hours posted over the year - including hospital dispatch physicians participating in emergency medical assistance - Total emergency medicine;
+arm_tot;hours_regulation_assistants;Nombre hebdomadaire moyen d'heures postées sur l'année - ARM (Assistants de régulation médicale) - Total médecine d'urgence;Average weekly number of hours posted over the year - ARM (Medical Regulation Assistants) - Total emergency medicine;
+osnp_tot;hours_onsp;Nombre hebdomadaire moyen d'heures postées sur l'année - Opérateurs de soins non-programmés (OSNP) - Total médecine d'urgence;Average weekly number of hours posted over the year - Non-scheduled healthcare operators (OSNP) - Total emergency medicine;
+com_smur_su;joint_personnel_SMUR_emergency;Personnel commun SMUR / URGENCES;Joint SMUR/EMERGENCY staff;
+etpsal_tot;etp_physicians_empl_total;ETP moyens annuels rémunérés des salariés - Total du personnel médical (hors internes);Average annual paid FTE of employees - Total medical staff (excluding interns);
+etpsal_urg;etp_physicians_empl_emergency;ETP moyens annuels rémunérés des salariés - Dont médecins urgentistes;Average annual paid FTE of employees - Including emergency physicians;
+efflib_tot;number_physicians_liberal_total;Effectifs des libéraux au 31/12 - TOTAL MEDECINE D'URGENCE;Number of private practitioners as of 12/31 - TOTAL EMERGENCY MEDICINE;
+efflib_urg;number_physicians_liberal_emergency;Effectifs des libéraux au 31/12 - dont STRUCTURE DES URGENCES;Number of private practitioners as of 12/31 - including EMERGENCY DEPARTMENT STRUCTURE;
+intmed;number_medecine_interns;Effectif au 31 décembre des internes de médecine;Number of medical interns as of December 31;
+docju_med;number_medecine_junior_doctors;Effectif au 31 décembre des docteurs juniors de médecine;Number of junior medical doctors as of December 31;
+inturg;number_ermegency_interns;Effectif au 31 décembre des internes de médecine d'urgence;Number of emergency medicine interns as of December 31;
+docju_urg;number_emergency_junior_doctors;Effectif au 31 décembre des docteurs juniors de médecine d'urgence;Number of junior emergency medicine doctors as of December 31;
+;NA;;;
+;NA;;;
+;NA;;;
+NB:;NA;;;
+"""Total emergency medecine"" includes all private practitioners who work in all structures related to the emergency department of the establishment (Emergency Department, SMUR, SAMU).";NA;;;
+"""Including emergency department structure"" only counts practitioners specifically assigned to the emergency department";NA;;;

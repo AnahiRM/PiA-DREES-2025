@@ -1,0 +1,1620 @@
+---
+title: "SAE_analysis"
+author: "Louise Gatty"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+# Set up ----
+
+```{r setup, message=FALSE}
+rm(list=ls())
+
+path = "/Users/Louise/Desktop/Master/M1/PiA-DREES-local/code"
+setwd(path)
+
+# Load necessary libraries ----
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(readr)
+library(httr)
+library(readr)
+library(janitor)
+library(tidyverse)
+library(stringr)
+library(purrr)
+library(ggplot2)
+library(sf)
+library(viridis)
+library(scales)
+library(patchwork)
+library(rlang)
+```
+
+# Import datasets ----
+
+```{r cars, message=FALSE}
+SAE_2024 <- read_csv2("../data/processed/SAE_final_2024.csv")
+Legend <- read_csv2("../docs/SAE_2024/Legends_short.csv")
+```
+
+
+# 1. General discription of the dataset ----
+
+To have a better overview of the structure of the dataset, we conduct descriptive statistics regarding establishment typology: frequencies/percentages for juridical_status, capacity, regulation, and emergency types.
+
+```{r}
+# Compute the percentage of emergency services by juridical status
+status_counts <- SAE_2024 %>%
+  count(juridical_status) %>%
+  mutate(percentage = n / sum(n) * 100)
+status_counts
+
+# Compute the percentage of emergency services by capacity
+capacity_counts <- SAE_2024 %>%
+  count(capacity) %>%
+  mutate(percentage = n / sum(n) * 100)
+capacity_counts
+
+# Compute the percentage of emergency services by regulation
+regulation_counts <- SAE_2024 %>%
+  count(regulation) %>%
+  mutate(
+    percentage = n / sum(n) * 100,
+    regulation = case_when(
+      regulation == 3 ~ "Yes, all the time",
+      regulation == 2 ~ "Yes, part of the time",
+      regulation == 1 ~ "No"
+    )
+  ) %>%
+  rename("Is the emergency service regulated?" = regulation)
+regulation_counts
+
+# Compute the percentage of emergency services by type
+type_counts <- SAE_2024 %>%
+  count(emergency_type) %>%
+  mutate(
+    percentage = n / sum(n) * 100,
+    emergency_type = case_when(
+      emergency_type == 1 ~ "Pediatric",
+      emergency_type == 2 ~ "General",
+      emergency_type == 3 ~ "Both"
+    )
+  ) %>%
+  rename("Type of emergency service" = emergency_type)
+type_counts
+```
+
+We map those proportions into pie charts.
+
+1. Status
+
+```{r, echo = FALSE}
+threshold <- 10  # percentage threshold for inside labels
+
+status_plot <- status_counts %>%
+  mutate(prop = percentage / 100) %>%
+  arrange(desc(juridical_status)) %>%
+  mutate(
+    ymax = cumsum(prop),
+    ymin = lag(ymax, default = 0),
+    labelPosition = (ymax + ymin) / 2,
+    label_inside = percentage >= threshold,
+    
+    # Define which slices are dark (adjust if needed)
+    dark_slice = juridical_status %in% "Public"
+  )
+
+status_chart <- ggplot(status_plot) +
+  
+  geom_rect(aes(ymax = ymax, ymin = ymin,
+                xmax = 1, xmin = 0,
+                fill = juridical_status),
+            color = "white") +
+  
+  coord_polar(theta = "y") +
+  
+  # Custom colors (NA in grey)
+  scale_fill_manual(values = c(
+    "Public" = "#440154",                 # dark purple
+    "Privé non lucratif" = "#21908C",  # teal
+    "Privé lucratif" = "#FDE725" # yellow
+  )) +
+  
+  xlim(c(0, 1.35)) +
+  
+  # Leader lines for small slices
+  geom_segment(
+    data = dplyr::filter(status_plot, !label_inside),
+    aes(x = 1, xend = 1.12,
+        y = labelPosition, yend = labelPosition),
+    color = "black",
+    linewidth = 0.6
+  ) +
+  
+    # Outside labels
+  geom_text(
+    data = dplyr::filter(status_plot, !label_inside),
+    aes(x = 1.15, y = labelPosition,
+        label = paste0(round(percentage, 0), "%"),
+        color = dark_slice),
+    size = 4,
+    show.legend = FALSE
+  ) +
+
+  # Inside labels
+  geom_text(
+    data = dplyr::filter(status_plot, label_inside),
+    aes(x = 0.6, y = labelPosition,
+        label = paste0(round(percentage, 0), "%"),
+        color = dark_slice),
+    size = 4,
+    show.legend = FALSE
+  ) +
+  
+  scale_color_manual(values = c(
+    "TRUE" = "white",   # white text for dark slices
+    "FALSE" = "black"   # black text otherwise
+  )) +
+  
+  labs(title = "Juridical Status of the Emergency Services",
+       fill = "Status") +
+  
+  theme_void() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+status_chart
+```
+
+2. Type
+
+```{r, echo = FALSE}
+library(dplyr)
+library(ggplot2)
+library(viridis)
+library(scales)
+
+type_counts_plot <- type_counts %>%
+  mutate(prop = percentage / 100) %>%
+  arrange(desc(`Type of emergency service`)) %>%
+  mutate(
+    ymax = cumsum(prop),
+    ymin = lag(ymax, default = 0),
+    labelPosition = (ymax + ymin) / 2,
+    label_inside = percentage >= threshold
+  )
+
+# ---- Compute viridis fill colors in the same order as the factor levels ----
+type_levels <- type_counts_plot$`Type of emergency service`
+
+fill_cols <- viridis::viridis(
+  n = length(type_levels),
+  option = "D",
+  direction = 1
+)
+names(fill_cols) <- type_levels
+
+# ---- Compute luminance to decide if text should be white or black ----
+# Convert hex -> RGB in [0,1], compute relative luminance
+hex_to_luminance <- function(hex) {
+  rgb <- grDevices::col2rgb(hex) / 255
+  r <- rgb[1, ]
+  g <- rgb[2, ]
+  b <- rgb[3, ]
+  0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
+lum <- hex_to_luminance(fill_cols)
+
+# Threshold: lower luminance = darker color => use white text
+dark_levels <- names(lum[lum < 0.55])
+
+type_counts_plot <- type_counts_plot %>%
+  mutate(
+    text_col = ifelse(`Type of emergency service` %in% dark_levels, "white", "black")
+  )
+
+type_chart <- ggplot(type_counts_plot) +
+  # pie
+  geom_rect(aes(
+    ymax = ymax, ymin = ymin, xmax = 1, xmin = 0,
+    fill = `Type of emergency service`
+  ), color = "white") +
+  coord_polar(theta = "y") +
+  scale_fill_manual(values = fill_cols) +
+  xlim(c(0, 1.35)) +  # room for outside labels
+
+  # leader lines ONLY for small slices
+  geom_segment(
+    data = dplyr::filter(type_counts_plot, !label_inside),
+    aes(x = 1, xend = 1.12, y = labelPosition, yend = labelPosition),
+    color = "black",
+    linewidth = 0.6
+  ) +
+
+  # outside labels ONLY for small slices (keep black, more readable)
+  geom_text(
+    data = dplyr::filter(type_counts_plot, !label_inside),
+    aes(x = 1.2, y = labelPosition,
+        label = paste0(round(percentage, 1), "%")),
+    size = 4,
+    color = "black"
+  ) +
+
+  # inside labels ONLY for large slices (white if slice is dark)
+  geom_text(
+    data = dplyr::filter(type_counts_plot, label_inside),
+    aes(x = 0.6, y = labelPosition,
+        label = paste0(round(percentage, 1), "%"),
+        color = text_col),
+    size = 4,
+    show.legend = FALSE
+  ) +
+  scale_color_identity() +
+
+  labs(title = "Type of the Emergency Service", fill = "Type") +
+  theme_void() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+type_chart
+
+```
+
+3. Regulation
+
+```{r, include = FALSE}
+regulation_plot <- regulation_counts %>%
+  mutate(prop = percentage / 100) %>%
+  arrange(desc(`Is the emergency service regulated?`)) %>%
+  mutate(
+    ymax = cumsum(prop),
+    ymin = lag(ymax, default = 0),
+    labelPosition = (ymax + ymin) / 2,
+    label_inside = percentage >= threshold,
+    
+    # Define which slices are dark (adjust if needed)
+    dark_slice = `Is the emergency service regulated?` %in% c("No", "Yes, all the time")
+  )
+
+regulation_chart <- ggplot(regulation_plot) +
+  
+  geom_rect(aes(ymax = ymax, ymin = ymin,
+                xmax = 1, xmin = 0,
+                fill = `Is the emergency service regulated?`),
+            color = "white") +
+  
+  coord_polar(theta = "y") +
+  
+  # Custom colors (NA in grey)
+  scale_fill_manual(values = c(
+    "No" = "#440154",                 # dark purple
+    "Yes, all the time" = "#21908C",  # teal
+    "Yes, part of the time" = "#FDE725", # yellow
+    "NA" = "grey70"
+  )) +
+  
+  xlim(c(0, 1.35)) +
+  
+  # Leader lines for small slices
+  geom_segment(
+    data = dplyr::filter(regulation_plot, !label_inside),
+    aes(x = 1, xend = 1.12,
+        y = labelPosition, yend = labelPosition),
+    color = "black",
+    linewidth = 0.6
+  ) +
+  
+  # Outside labels
+  geom_text(
+    data = dplyr::filter(regulation_plot, !label_inside),
+    aes(x = 1.15, y = labelPosition,
+        label = paste0(round(percentage, 1), "%"),
+        color = dark_slice),
+    size = 4,
+    show.legend = FALSE
+  ) +
+  
+  # Inside labels
+  geom_text(
+    data = dplyr::filter(regulation_plot, label_inside),
+    aes(x = 0.6, y = labelPosition,
+        label = paste0(round(percentage, 1), "%"),
+        color = dark_slice),
+    size = 4,
+    show.legend = FALSE
+  ) +
+  
+  scale_color_manual(values = c(
+    "TRUE" = "white",   # white text for dark slices
+    "FALSE" = "black"   # black text otherwise
+  )) +
+  
+  labs(title = "Regulation of the Emergency Services",
+       fill = "Regulation") +
+  
+  theme_void() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+regulation_chart
+```
+
+4. Capacity
+
+```{r}
+capacity_plot_2 <- capacity_counts %>%
+  mutate(prop = percentage / 100) %>%
+  arrange(desc(capacity)) %>%
+  mutate(
+    ymax = cumsum(prop),
+    ymin = lag(ymax, default = 0),
+    labelPosition = (ymax + ymin) / 2,
+    label_inside = percentage >= threshold,
+    
+    # Define which slices are dark (adjust if needed)
+    dark_slice = capacity %in% "High capacity"
+  )
+
+capacity_chart <- ggplot(capacity_plot_2) +
+  
+  geom_rect(aes(ymax = ymax, ymin = ymin,
+                xmax = 1, xmin = 0,
+                fill = capacity),
+            color = "white") +
+  
+  coord_polar(theta = "y") +
+  
+  # Custom colors (NA in grey)
+  scale_fill_manual(values = c(
+    "High capacity" = "#440154",                 # dark purple
+    "Medium capacity" = "#21908C",  # teal
+    "Low capacity" = "#FDE725" # yellow
+  )) +
+  
+  xlim(c(0, 1.35)) +
+  
+  # Leader lines for small slices
+  geom_segment(
+    data = dplyr::filter(capacity_plot_2, !label_inside),
+    aes(x = 1, xend = 1.12,
+        y = labelPosition, yend = labelPosition),
+    color = "black",
+    linewidth = 0.6
+  ) +
+  
+  # Outside labels
+  geom_text(
+    data = dplyr::filter(capacity_plot_2, !label_inside),
+    aes(x = 1.15, y = labelPosition,
+        label = paste0(round(percentage, 1), "%"),
+        color = dark_slice),
+    size = 4,
+    show.legend = FALSE
+  ) +
+  
+  # Inside labels
+  geom_text(
+    data = dplyr::filter(capacity_plot_2, label_inside),
+    aes(x = 0.6, y = labelPosition,
+        label = paste0(round(percentage, 0), "%"),
+        color = dark_slice),
+    size = 4,
+    show.legend = FALSE
+  ) +
+  
+  scale_color_manual(values = c(
+    "TRUE" = "white",   # white text for dark slices
+    "FALSE" = "black"   # black text otherwise
+  )) +
+  
+  labs(title = "Capacity of the Emergency Services",
+       fill = "Capacity") +
+  
+  theme_void() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+capacity_chart
+```
+
+```{r}
+# Export the 4 pie charts
+ggsave("../results/SAE_2024/status_pie_chart.png", plot = status_chart, width = 6, height = 6)
+ggsave("../results/SAE_2024/type_pie_chart.png", plot = type_chart, width = 6, height = 6)
+ggsave("../results/SAE_2024/regulation_pie_chart.png", plot = regulation_chart, width = 6, height = 6)
+ggsave("../results/SAE_2024/capacity_pie_chart.png", plot = capacity_chart, width = 6, height = 6)
+```
+
+```{r}
+# Display the 4 charts together
+(status_chart + type_chart) / (regulation_chart + capacity_chart) +
+  plot_annotation(
+                  theme = theme(plot.title = element_text(hjust = 0.5, size = 16)))
+```
+
+```{r}
+rm(status_counts, type_counts, regulation_counts, capacity_counts)
+rm(status_plot, type_counts_plot, regulation_plot, capacity_plot_2)
+rm(status_chart, type_chart, regulation_chart, capacity_chart)
+```
+
+We then check for correlation between capacity and visits (scatter plot): hospitals with high capacity and high number of visits are just giants, the ones with lots of visits but low capacity are overloaded (it introduces the 2nd part).
+
+```{r}
+# Calculate medians first (optional, but cleaner)
+median_beds <- median(SAE_2024$beds_number, na.rm = TRUE)
+median_visits <- median(SAE_2024$total_emergency_visits_win, na.rm = TRUE)
+
+ggplot(SAE_2024, aes(x = beds_number, y = total_emergency_visits_win)) +
+  geom_point(alpha = 0.6) +
+  # Add the quadrant lines
+  geom_vline(xintercept = median_beds, linetype = "dashed", color = "red", size = 0.8) +
+  geom_hline(yintercept = median_visits, linetype = "dashed", color = "red", size = 0.8) +
+  scale_x_continuous(labels = comma) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Correlation between Capacity and Number of Visits",
+    subtitle = "Quadrants divided by median values",
+    x = "Capacity (number of beds)",
+    y = "Number of Visits in Emergency Services"
+  ) +
+  theme_minimal()
+
+ggsave("../results/SAE_2024/capacity_visits_scatter.png", width = 10, height = 8)
+```
+
+We focus on those in the top left quadrant: low capacity but high number of visits. We check if they are public or private, and if they are regulated or not.
+
+```{r}
+# Filter for the top-left quadrant
+overloaded_hosp <- SAE_2024 %>%
+  filter(beds_number < median_beds, 
+         total_emergency_visits_win > median_visits)
+
+# Define is_overloaded variable (top-left corner of the scatterplot) in SAE_2024
+threshold_beds <- median(SAE_2024$beds_number, na.rm = TRUE)
+threshold_visits <- median(SAE_2024$total_emergency_visits_win, na.rm = TRUE)
+SAE_2024 <- SAE_2024 %>%
+  mutate(is_overloaded = if_else(
+    beds_number < threshold_beds & total_emergency_visits_win > threshold_visits, 
+    "Overloaded", 
+    "Not Overloaded"
+  ))
+```
+
+```{r}
+# See what percentage of them are public
+overloaded_hosp %>%
+  count(juridical_status) %>%
+  mutate(percentage_status = n / sum(n) * 100)
+
+# See what percentage of them are regulated
+overloaded_hosp %>%
+  count(regulation) %>%
+  mutate(
+    percentage = n / sum(n) * 100,
+    regulation = case_when(
+      regulation == 3 ~ "Yes, all the time",
+      regulation == 2 ~ "Yes, part of the time",
+      regulation == 1 ~ "No"
+    )
+  ) %>%
+  rename("Is the emergency service regulated?" = regulation)
+
+# See what percentage of them are pediatric/general/both
+overloaded_hosp %>%
+  count(emergency_type) %>%
+  mutate(
+    percentage = n / sum(n) * 100,
+    emergency_type = case_when(
+      emergency_type == 1 ~ "Pediatric",
+      emergency_type == 2 ~ "General",
+      emergency_type == 3 ~ "Both"
+    )
+  ) %>%
+  rename("Type of emergency service" = emergency_type)
+```
+
+The overloaded hospitals are mostly public (48%), mostly regulated (48%), and mostly general (98%). But Chi-squared tests.
+
+We check that the distributions are statistically significant.
+
+```{r}
+# Create function to compute the distribution of overloaded vs non-overloaded hospitals for a given variable, and run a chi-squared test
+analyze_overload_dist <- function(data, var_name) {
+  var_sym <- sym(var_name)
+  
+  global_dist <- data %>%
+    count(!!var_sym) %>%
+    mutate(pct_global = n / sum(n) * 100) %>%
+    select(!!var_sym, pct_global)
+
+  overloaded_dist <- data %>%
+    filter(is_overloaded == "Overloaded") %>%
+    count(!!var_sym) %>%
+    mutate(pct_overloaded = n / sum(n) * 100) %>%
+    # right_join ensures we keep categories that have 0 occurrences
+    right_join(global_dist, by = var_name) %>%
+    mutate(
+      pct_overloaded = replace_na(pct_overloaded, 0)
+    )
+
+  table_stats <- data %>%
+    count(is_overloaded, !!var_sym) %>%
+    pivot_wider(names_from = all_of(var_name), values_from = n, values_fill = 0) %>%
+    select(-is_overloaded) %>%
+    as.matrix()
+  
+  chi_result <- chisq.test(table_stats)
+
+  return(list(distribution_table = overloaded_dist, chi_test = chi_result))
+}
+
+# Define variables to test
+vars_to_test <- c("emergency_type", "regulation", "juridical_status")
+
+```
+
+```{r}
+# Create contingency tables and run chi-squared tests for each variable
+results <- setNames(lapply(vars_to_test, function(v) analyze_overload_dist(SAE_2024, v)), vars_to_test)
+
+results
+```
+```{r}
+# Create a summary table for the distribution of overloaded vs non-overloaded hospitals for each variable, including the p-value of the chi-squared test, and the difference in percentage points between the overloaded distribution and the global distribution.
+chi2_summary_table <- imap_dfr(results, function(res, var_name) {
+  res$distribution_table %>%
+    mutate(
+      variable = var_name,
+      category_code = as.character(!!sym(var_name)), # Keep code for mapping
+      p_value = res$chi_test$p.value
+    ) %>%
+    select(variable, category_code, pct_overloaded, pct_global, p_value)
+})
+
+# Add the labels
+chi2_summary_table <- chi2_summary_table %>%
+  mutate(
+    category_label = case_when(
+      variable == "emergency_type" & category_code == "1" ~ "Pediatric",
+      variable == "emergency_type" & category_code == "2" ~ "General",
+      variable == "emergency_type" & category_code == "3" ~ "Both",
+      variable == "regulation" & category_code == "1" ~ "No",
+      variable == "regulation" & category_code == "2" ~ "Part-time",
+      variable == "regulation" & category_code == "3" ~ "Full-time",
+      variable == "juridical_status" & category_code == "Public" ~ "Public",
+      variable == "juridical_status" & category_code == "Privé non lucratif" ~ "Private non-profit",
+      variable == "juridical_status" & category_code == "Privé lucratif" ~ "Private for-profit",
+      TRUE ~ category_code 
+    )
+  )
+
+# Calculate the difference in percentage points between the overloaded distribution and the global distribution
+chi2_summary_table <- chi2_summary_table %>%
+  mutate(pct_diff = pct_overloaded - pct_global)
+
+chi2_summary_table <-  chi2_summary_table %>%
+  select(variable, category_label, pct_overloaded, pct_global, pct_diff, p_value)
+
+chi2_summary_table
+```
+
+
+```{r}
+threshold <- quantile(SAE_2024$patients_per_doctor_win, 0.9, na.rm = TRUE)
+
+SAE_2024 <- SAE_2024 %>%
+  mutate(is_overloaded = if_else(
+    patients_per_doctor_win >= threshold, 
+    "Overloaded", 
+    "Not Overloaded"
+  ))
+
+# 2. Run the analysis (Ensure you've re-run the function above first!)
+all_results <- setNames(lapply(vars_to_test, function(v) analyze_overload_dist(SAE_2024, v)), vars_to_test)
+
+# 3. Compile the single summary table with Labels
+summary_table <- imap_dfr(all_results, function(res, var_name) {
+  res$distribution_table %>%
+    mutate(
+      variable = var_name,
+      category_code = as.character(!!sym(var_name)), # Keep code for mapping
+      p_value = res$chi_test$p.value
+    ) %>%
+    select(variable, category_code, pct_overloaded, pct_global, p_value)
+})
+
+# Map the labels and add the Difference column
+summary_table_final <- summary_table %>%
+  mutate(
+    # 1. Map labels to codes
+    category_label = case_when(
+      variable == "emergency_type" & category_code == "1" ~ "Pediatric",
+      variable == "emergency_type" & category_code == "2" ~ "General",
+      variable == "emergency_type" & category_code == "3" ~ "Both",
+      variable == "regulation" & category_code == "1" ~ "No",
+      variable == "regulation" & category_code == "2" ~ "Part-time",
+      variable == "regulation" & category_code == "3" ~ "Full-time",
+      TRUE ~ category_code 
+    ),
+    # 2. Compute the Difference (Percentage Points)
+    pct_diff = pct_overloaded - pct_global,
+    
+    # 3. Clean up formatting
+    across(starts_with("pct"), ~round(., 2)),
+    p_value = format.pval(p_value, digits = 3, eps = 0.001),
+    
+    # 4. Add a simple interpretation column
+    representation = ifelse(pct_diff > 0, "Over-represented", "Under-represented")
+  ) %>%
+  select(variable, category_label, pct_overloaded, pct_global, pct_diff, p_value, representation)
+
+summary_table_final
+```
+
+```{r}
+library(gt)
+
+summary_table_final %>%
+  gt() %>%
+  tab_header(title = "Distribution of the Overloaded Hospitals") %>%
+  # Sauvegarde automatique à la bonne taille
+  gtsave("../results/SAE_2024/overload_distribution_summary.png")
+```
+
+
+# 2. Ratios of doctors per inhabitant, and visits per doctor ----
+
+We first want to understand the distribution of doctors across France, to identify potentially underserved areas. We compute the ratio of patients per doctor by department, and map it.
+
+The population data is from Insee.
+
+## 2.1. Doctors per inhabitant
+
+```{r, include = FALSE}
+# Import demographic data
+demographics <- read_csv2("../data/raw/pop_dpt.csv")
+
+# Keep only columns 1, 2 and 8 and rows 5 to 108
+demographics <- demographics %>%
+  select(1, 2, 8) %>%
+  slice(5:108) %>%
+  rename(department_code = `Estimation de population au 1er janvier, par département, sexe et grande classe d'âge`) %>%
+  rename(department_name = 2) %>%
+  rename(population = 3)
+
+# Rename oversees territories department code to match the one in the main dataset
+demographics <- demographics %>%
+  mutate(department = case_when(
+    department_code == "971" ~ "9A", # Guadeloupe
+    department_code == "972" ~ "9B", # Martinique
+    department_code == "973" ~ "9C", # Guyane
+    department_code == "974" ~ "9D", # La Réunion
+    department_code == "976" ~ "9F", # Mayotte
+    TRUE ~ department_code # Keeps everything else as is
+  )) %>%
+  select(-department_code) %>%
+  rename(department_code = department)
+
+# Force to numeric
+demographics <- demographics %>%
+  mutate(
+    population = as.numeric(str_replace(population, ",", "."))
+  )
+
+# Drop rows 97, 103 and 104
+demographics <- demographics %>%
+  slice(-c(97, 103, 104))
+```
+
+```{r}
+# Convert department codes to characters
+SAE_2024 <-  SAE_2024 %>%
+  mutate(dep_number = as.character(dep_number))
+
+# Sum the etp_emergency_win by department
+doctors_by_department <- SAE_2024 %>%
+  group_by(dep_number) %>%
+  summarise(total_etp_emergency = sum(etp_total_combine, na.rm = TRUE))
+
+# # Idem for liberal doctors
+# liberals_by_department <- SAE_2024 %>%
+#   group_by(dep_number) %>%
+#   summarise(total_liberal_doctors = sum(number_physicians_liberal, na.rm = TRUE))
+
+# Merge the number of doctors with the demographic data
+doctors_pop <- doctors_by_department %>%
+  left_join(demographics, by = c("dep_number" = "department_code"))
+
+# #Merge with the liberal doctors data
+# doctors_pop <- doctors_pop %>%
+#   left_join(liberals_by_department, by = "dep_number")
+
+# Calculate the ratio of doctors per 1000 inhabitant (order by ascending ratio)
+doctors_pop <- doctors_pop %>%
+  mutate(doctors_per_1000 = (total_etp_emergency / population) * 1000)
+  # mutate(liberals_per_1000 = (total_liberal_doctors / population) * 1000)
+
+#Check for correlation
+# cor(doctors_pop$doctors_per_1000, doctors_pop$liberals_per_1000, use = "complete.obs")
+```
+
+Negative correlation => the more emergency doctors there are in a department, the fewer liberal doctors.
+
+We create a map of the ratio of doctors per 1000 inhabitants by department, to identify potential disparities in access to emergency care across France.
+
+```{r}
+# Load shapefile for French departments
+departments_geo <- st_read("../data/raw/departements.geojson")
+
+# Merge the geographic data with the doctors per population data
+departments_geo <- departments_geo %>%
+  left_join(doctors_pop, by = c("code" = "dep_number"))
+
+# Choropleth map of doctors per 1000 inhabitants by department (scale_fill_viridis_c)
+doctors_per_1000 <- ggplot(data = departments_geo) +
+  geom_sf(aes(fill = doctors_per_1000), color = "white", size = 0.1) +
+  scale_fill_viridis_c(
+    option = "magma",
+    name = "Doctors per 1000 inhabitants",
+    na.value = "grey90"
+  ) +
+  labs(title = "Ratio of Doctors in Emergency Services per 1000 Inhabitants by Department") +
+  theme_minimal()
+
+# Choropleth map of liberal doctors per 1000 inhabitants by department (scale_fill_viridis_d)
+liberals_per_1000 <- ggplot(data = departments_geo) +
+  geom_sf(aes(fill = liberals_per_1000), color = "white", size = 0.1) +
+  scale_fill_viridis_c(
+    option = "magma",
+    name = "Liberal Doctors per 1000 inhabitants",
+    na.value = "grey90"
+  ) +
+  labs(title = "Ratio of Liberal Doctors in Emergency Services per 1000 Inhabitants by Department") +
+  theme_minimal()
+```
+
+```{r}
+# Export the maps
+ggsave("../results/SAE_2024/doctors_per_1000_map.png", doctors_per_1000, width = 10, height = 8)
+ggsave("../results/SAE_2024/liberals_per_1000_map.png", liberals_per_1000, width = 10, height = 8)
+```
+
+QUESTION FOR THE DREES: HOW IMPORTANT IS IT TO USE THE LIBERAL DOCTORS?
+
+--
+
+TO REFLECT ON: not sure it's useful to explore le fait que la où il y a peu de médecins par habitants les établsisements sont publics.
+
+We compare this ratio across juridical status and regulation dimensions.
+
+```{r}
+# Merge the index of doctors per 1000 inhabitants with the main dataset
+SAE_2024 <- SAE_2024 %>%
+  left_join(doctors_pop %>% select(dep_number, doctors_per_1000), by = c("dep_number" = "dep_number")) %>%
+  rename(dep_doctors_per_1000 = doctors_per_1000)
+
+# Boxplot of doctors per 1000 inhabitants by juridical status
+ggplot(SAE_2024, aes(x = juridical_status, y = dep_doctors_per_1000)) +
+  geom_boxplot() +
+  labs(title = "Distribution of Doctors per 1000 Inhabitants by Juridical Status",
+       x = "Juridical Status",
+       y = "Doctors per 1000 Inhabitants") +
+  theme_minimal()
+```
+
+```{r}
+# 1. Calculer la part du privé par département
+dep_analysis <- SAE_2024 %>%
+  group_by(dep_number) %>%
+  summarise(
+    total_hospitals = n(),
+    # On compte les établissements privés (lucratifs + non-lucratifs)
+    pct_private = sum(juridical_status %in% c("Privé lucratif", "Privé non lucratif")) / n() * 100,
+    # On récupère l'index (puisqu'il est identique pour tout le département, on prend la moyenne)
+    index_urgences = mean(dep_doctors_per_1000, na.rm = TRUE)
+  )
+
+# 2. Création du scatter plot
+ggplot(dep_analysis, aes(x = pct_private, y = index_urgences)) +
+  geom_point(aes(size = total_hospitals), alpha = 0.6, color = "steelblue") +
+  geom_smooth(method = "lm", color = "red", se = FALSE, linetype = "dashed") +
+  labs(
+    title = "Corrélation entre l'offre privée et la densité de médecins d'urgence",
+    subtitle = "Chaque point représente un département",
+    x = "Pourcentage d'hôpitaux privés dans le département (%)",
+    y = "Index ETP Urgences (pour 1000 hab)",
+    size = "Nombre d'hôpitaux"
+  ) +
+  theme_minimal()
+```
+
+## 2.2. Visits per doctor
+
+As mentioned in the data cleaning code on outliers, we use the raw variables in these calculations (bc the outliers didn't appear to be the result of a filling mistake).
+
+```{r}
+# Calculate the ratio of visits per doctor (na.rm = TRUE to avoid division by zero)
+SAE_2024 <- SAE_2024 %>% 
+  mutate(patients_per_doctor = case_when(
+    etp_physicians_empl_emergency == 0 ~ NA_real_,
+    is.na(etp_physicians_empl_emergency) ~ NA_real_,
+    TRUE ~ total_emergency_visits_raw / etp_physicians_empl_emergency
+  ))
+
+SAE_2024 <- SAE_2024 %>%
+  mutate(
+    # Conversion des libéraux en ETP estimés (poids de 0.8 à ajuster)
+    etp_liberals = number_physicians_liberal,
+    
+    # Addition des deux mondes
+    etp_total_combine = etp_physicians_empl_emergency + etp_liberals,
+    
+    # Nouveau ratio
+    patients_per_doctor_combined = total_emergency_visits_raw / etp_total_combine
+  )
+
+SAE_2024 <- SAE_2024 %>%
+  mutate(patients_per_doctor_clean = case_when(
+      patients_per_doctor_combined > 10000 ~ NA_real_,  # Trop élevé (sous-déclaration personnel)
+      patients_per_doctor_combined < 300   ~ NA_real_,  # Trop faible (erreur ou structure quasi-fermée)
+      is.infinite(patients_per_doctor_combined) ~ NA_real_,
+      TRUE ~ patients_per_doctor_combined               # Valeur conservée si elle est dans l'intervalle
+    )
+  )
+
+SAE_2024 <-  SAE_2024 %>%
+  rename(patients_per_doctor_empl = patients_per_doctor)
+
+SAE_2024 <-  SAE_2024 %>%
+  rename(patients_per_doctor = patients_per_doctor_clean)
+```
+
+```{r}
+# Create a dataset with the average ratio of patients per doctor by department
+ratio_by_department <- SAE_2024 %>%
+  group_by(dep_number) %>%
+  summarise(avg_patients_per_doctor = mean(patients_per_doctor, na.rm = TRUE))
+```
+
+HOPITAL PRIVE DE VITRY SITE PASTEUR is an obvious outlier (624950.000 patients per doctors, which would mean 1,700 per doctor per day). It's likely due to the low value of its etp_physicians_empl_emergency (0.01), which is probably a filling mistake. We winsorize the patients_per_doctor variable at 99% to limit the influence of this outlier on the average ratio by department.
+
+
+While the primary variables were winsorized at the 95th percentile to account for the high capacity of University Hospitals (CHUs), the resulting visits-per-doctor ratio still exhibited extreme outliers driven by 'denominator effects.'
+
+In several cases, such as Hôpital Privé de Vitry, APHM Hôpital La Timone, and Institut Arnault Tzanck, the recorded ETP is exceptionally low (e.g., 0.04 to 0.11), resulting in mathematically impossible ratios exceeding 100,000 visits per physician per year. Similar artifacts are observed for GCS Urgences Pays Royannais, Polyclinique du Beaujolais, and Clinique les Ormeaux. These values likely stem from reporting discrepancies in the SAE database—such as the use of external contractors, interim staff, or medical personnel being attached to different legal entities—rather than reflecting actual clinical throughput.
+
+To preserve these observations while preventing these 'artificial' efficiencies from biasing the regression coefficients, we winsorize the ratio at the 99th percentile. This approach retains the high-activity nature of these centers but caps their impact at a statistically plausible upper bound.
+
+```{r}
+# # Winsorize the patients_per_doctor variable at 99%
+# SAE_2024 <- SAE_2024 %>%
+#   mutate(patients_per_doctor_win = ifelse(
+#     patients_per_doctor > quantile(patients_per_doctor, 0.99, na.rm = TRUE),
+#     quantile(patients_per_doctor, 0.99, na.rm = TRUE),
+#     patients_per_doctor
+#   ))
+# 
+# # Update the ratio_by_department dataset with the winsorized variable
+# rm(ratio_by_department)
+# ratio_by_department <- SAE_2024 %>%
+#   group_by(dep_number) %>%
+#   summarise(avg_patients_per_doctor = mean(patients_per_doctor_win, na.rm = TRUE))
+```
+
+```{r}
+# Merge the updated dataset with the geographic data
+ratio_by_department <- departments_geo %>%
+  left_join(ratio_by_department, by = c("code" = "dep_number"))
+
+# Choropleth map of the average ratio of patients per doctor by department
+patients_per_doctor <- ggplot(data = ratio_by_department) +
+  geom_sf(aes(fill = avg_patients_per_doctor), color = "white", size = 0.1) +
+  scale_fill_viridis_c(
+    option = "magma",
+    name = "Average Patients per Doctor",
+    na.value = "grey90"
+  ) +
+  labs(title = "Average Ratio of Patients per Doctor in Emergency Services by Department") +
+  theme_minimal()
+
+patients_per_doctor
+```
+
+```{r}
+ggsave("../results/SAE_2024/patients_per_doctor_map.png",  patients_per_doctor, width = 10, height = 8)
+```
+
+We now compare the ratio across juridical status and regulation dimensions.
+
+```{r}
+# Compute the median ratio of patients per doctor
+national_median <- median(SAE_2024$patients_per_doctor_win, na.rm = TRUE)
+
+#Prepare the data for Juridical Status
+status_deviation <- SAE_2024 %>%
+  group_by(juridical_status) %>%
+  summarise(group_median = median(patients_per_doctor_win, na.rm = TRUE)) %>%
+  mutate(
+    deviation = group_median - national_median,
+    type = ifelse(deviation > 0, "Above Median", "Below Median")
+  ) %>%
+  arrange(deviation)
+
+# 3. Plot for Juridical Status
+status_dev_plot <- ggplot(status_deviation, aes(x = reorder(juridical_status, deviation), y = deviation, fill = type)) +
+  geom_col() +
+  coord_flip() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  scale_fill_manual(values = c("Above Median" = "#d73027", "Below Median" = "#4575b4")) +
+  labs(
+    title = "Deviation from National Median by Juridical Status",
+    subtitle = paste("National Median:", round(national_median, 1), "visits per doctor"),
+    x = "Juridical Status",
+    y = "Difference from National Median",
+    fill = "Status"
+  ) +
+  theme_minimal()
+
+status_dev_plot
+```
+
+```{r}
+# Prepare data for capacity
+capacity_deviation <- SAE_2024 %>%
+  group_by(capacity) %>%
+  summarise(group_median = median(patients_per_doctor_win, na.rm = TRUE)) %>%
+  mutate(
+    deviation = group_median - national_median,
+    type = ifelse(deviation > 0, "Above Median", "Below Median"),
+    capacity_label = case_when(
+      capacity == 3 ~ "High capacity",
+      capacity == 2 ~ "Medium capacity",
+      capacity == 1 ~ "Low capacity"
+    )
+  ) %>%
+  arrange(deviation)
+
+# Plot for capacity
+capacity_dev_plot <- ggplot(capacity_deviation, aes(x = reorder(capacity, deviation), y =
+    deviation, fill = type)) +
+  geom_col() +
+  coord_flip() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  scale_fill_manual(values = c("Above Median" = "#d73027", "Below Median" = "#4575b4")) +
+  labs(
+    title = "Deviation from National Median by Capacity",
+    subtitle = paste("National Median:", round(national_median, 1), "visits per doctor"),
+    x = "Capacity",
+    y = "Difference from National Median",
+    fill = "Capacity"
+  ) +
+  theme_minimal()
+
+capacity_dev_plot
+```
+
+
+```{r}
+# Prepare data for regulation
+regulation_deviation <- SAE_2024 %>%
+  group_by(regulation) %>%
+  summarise(group_median = median(patients_per_doctor_win, na.rm = TRUE)) %>%
+  mutate(
+    deviation = group_median - national_median,
+    type = ifelse(deviation > 0, "Above Median", "Below Median"),
+    regulation_label = case_when(
+      regulation == 3 ~ "Yes, all the time",
+      regulation == 2 ~ "Yes, part of the time",
+      regulation == 1 ~ "No"
+    )
+  ) %>%
+  arrange(deviation)
+
+# Plot for regulation
+regulation_dev_plot <- ggplot(regulation_deviation, aes(x = reorder(regulation_label, deviation), y =
+    deviation, fill = type)) +
+  geom_col() +
+  coord_flip() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  scale_fill_manual(values = c("Above Median" = "#d73027", "Below Median" = "#4575b4")) +
+  labs(
+    title = "Deviation from National Median by Regulation Status",
+    subtitle = paste("National Median:", round(national_median, 1), "visits per doctor"),
+    x = "Regulation Status",
+    y = "Difference from National Median",
+    fill = "Regulation"
+  ) +
+  theme_minimal()
+
+regulation_dev_plot
+```
+
+```{r}
+# Prepare data for waiting_monitoring
+waiting_deviation <- SAE_2024 %>%
+  group_by(waiting_monitoring) %>%
+  summarise(group_median = median(patients_per_doctor_win, na.rm = TRUE)) %>%
+  mutate(
+    deviation = group_median - national_median,
+    type = ifelse(deviation > 0, "Above Median", "Below Median"),
+  ) %>%
+  arrange(deviation)
+
+# Plot for waiting monitoring
+waiting_dev_plot <- ggplot(waiting_deviation, aes(x = reorder(waiting_monitoring, deviation), y =
+    deviation, fill = type)) +
+  geom_col() +
+  coord_flip() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  scale_fill_manual(values = c("Above Median" = "#d73027", "Below Median" = "#4575b4")) +
+  labs(
+    title = "Deviation from National Average by Waiting Monitoring Status",
+    subtitle = paste("National Average:", round(national_median, 1), "visits per doctor"),
+    x = "Waiting Monitoring Status",
+    y = "Difference from National Average",
+    fill = "Waiting Monitoring"
+  ) +
+  theme_minimal()
+
+waiting_dev_plot
+```
+
+```{r}
+ggsave("../results/SAE_2024/status_deviation_plot.png", status_dev_plot, width = 8, height = 6)
+ggsave("../results/SAE_2024/capacity_deviation_plot.png", capacity_dev_plot, width = 8, height = 6)
+ggsave("../results/SAE_2024/regulation_deviation_plot.png", regulation_dev_plot, width = 8, height = 6)
+ggsave("../results/SAE_2024/waiting_deviation_plot.png", waiting_dev_plot, width = 8, height = 6)
+```
+
+So now we've seen:
+- the hospitals that are most overloaded in terms of visits per doctor, their deviation from the national median across the different dimensions (juridical status, regulation, capacity, waiting monitoring), and where there are mostly located,
+- the departments with the lowest ratio of doctors per inhabitant.
+
+What we are trying to explain is why some hospitals are more overloaded than others. We have seen that the regulation and capacity dimensions don't seem to be correlated with the ratio of patients per doctor, but the juridical status does (private hospitals have a lower ratio of patients per doctor). We also know that some departments have a very low ratio of doctors per inhabitant.
+
+
+```{r}
+# Scatterplot of patients per doctor vs. doctors per 1000 inhabitants by department (with a regression line)
+ggplot(ratio_by_department, aes(x = doctors_per_1000, y = avg_patients_per_doctor)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", color = "red", se = FALSE) +
+  labs(
+    title = "Correlation between Doctors per 1000 Inhabitants and Average Patients per Doctor",
+    x = "Doctors per 1000 Inhabitants",
+    y = "Average Patients per Doctor"
+  ) +
+  theme_minimal()
+
+cor(ratio_by_department$doctors_per_1000, ratio_by_department$avg_patients_per_doctor, use = "complete.obs")
+```
+Negative correlation: the more doctors there are in a department, the fewer patients per doctor there are on average.
+
+```{r}
+# Save the scatter plot
+ggsave("../results/SAE_2024/patients_per_doctor_vs_doctors_per_1000.png", width = 10, height = 8)
+```
+
+
+```{r}
+# Statistical test on the correlation
+cor_test <- cor.test(ratio_by_department$doctors_per_1000, ratio_by_department$avg_patients_per_doctor, use = "complete.obs")
+print(cor_test)
+```
+We reject the null hypothesis at the 1% threshold: the correlation is statistically significant. However, it is moderate (-0.35), which means that there are other factors at play in the ratio of patients per doctor.
+
+Moreover, the R^2 is equal to 0.12, which means that only 12% of the variance in the ratio of patients per doctor is explained by the number of doctors per inhabitant.
+
+We draw the same scatterplot but this time at the hospital level. We focus on the hospitals in the top-left corner, ie those with a low ratio of doctors per inhabitant but a high ratio of patients per doctor, to see if they are mostly public or private, and if they are regulated or not.
+
+```{r}
+# Scatter plot of patients per doctor vs. doctors per 1000 inhabitants by hospital (divide in 4 quadrants based on the median)
+ggplot(SAE_2024, aes(x = dep_doctors_per_1000, y = patients_per_doctor_win)) +
+  geom_point(alpha = 0.6) +
+  geom_vline(xintercept = median(SAE_2024$dep_doctors_per_1000, na.rm = TRUE), linetype = "dashed", color = "red", size = 0.8) +
+  geom_hline(yintercept = median(SAE_2024$patients_per_doctor_win, na.rm = TRUE), linetype = "dashed", color = "red", size = 0.8) +
+  labs(
+    title = "Correlation between Doctors per 1000 Inhabitants and Patients per Doctor at the Hospital Level",
+    subtitle = "Quadrants divided by median values",
+    x = "Doctors per 1000 Inhabitants in the Department",
+    y = "Patients per Doctor (winsorized)"
+  ) +
+  theme_minimal()
+```
+```{r}
+ggsave("../results/SAE_2024/patients_per_doctor_vs_doctors_per_1000_hospital.png", width = 10, height = 8)
+```
+
+We study the top left corner, ie the departments with low doctors per inhabitant but high patients per doctor. We check if they are mostly public or private, and if they are regulated or not.
+
+NB: We add the percentages on the whole dataset to have a benchmark for comparison (eg if 80% of the hospitals in the top left corner are public but only 50% of the whole dataset is public, then we can say that public hospitals are overrepresented in the top left corner). We test this difference with a Chi squared test.
+
+```{r}
+# Filter for the top-left quadrant
+tensed_hospitals <- SAE_2024 %>%
+  filter(dep_doctors_per_1000 < median(dep_doctors_per_1000, na.rm = TRUE), 
+         patients_per_doctor_win > median(patients_per_doctor_win, na.rm = TRUE))
+```
+
+```{r}
+# # Create the "is_tensed" column
+# SAE_2024 <- SAE_2024 %>%
+#   mutate(is_tensed = ifelse(
+#     dep_doctors_per_1000 < median(dep_doctors_per_1000, na.rm = TRUE) & 
+#     patients_per_doctor_win > median(patients_per_doctor_win, na.rm = TRUE),
+#     "Tensed", "Not Tensed"
+#   ))
+# 
+# # Run the analysis
+# all_results <- setNames(lapply(vars_to_test, function(v) analyze_overload_dist(SAE_2024, v)), vars_to_test)
+# 
+# # Compile the single summary table with Labels
+# summary_table <- imap_dfr(all_results, function(res, var_name) {
+#   res$distribution_table %>%
+#     mutate(
+#       variable = var_name,
+#       category_code = as.character(!!sym(var_name)), # Keep code for mapping
+#       p_value = res$chi_test$p.value
+#     ) %>%
+#     select(variable, category_code, pct_overloaded, pct_global, p_value)
+# })
+# # Map the labels and add the Difference column
+# summary_table_final <- summary_table %>%
+#   mutate(
+#     # 1. Map labels to codes
+#     category_label = case_when(
+#       variable == "emergency_type" & category_code == "1" ~ "Pediatric",
+#       variable == "emergency_type" & category_code == "2" ~ "General",
+#       variable == "emergency_type" & category_code == "3" ~ "Both",
+#       variable == "regulation" & category_code == "1" ~ "No",
+#       variable == "regulation" & category_code == "2" ~ "Part-time",
+#       variable == "regulation" & category_code == "3" ~ "Full-time",
+#       TRUE ~ category_code
+#     ),
+#     # 2. Compute the Difference (Percentage Points)
+#     pct_diff = pct_overloaded - pct_global,
+#     # 3. Clean up formatting
+#     across(starts_with("pct"), ~round(., 2)),
+#     p_value = format.pval(p_value, digits = 3, eps = 0.001),
+#     # 4. Add a simple interpretation column
+#     representation = ifelse(pct_diff > 0, "Over-represented", "Under-represented")
+#   ) %>%
+#   select(variable, category_label, pct_overloaded, pct_global, pct_diff, p_value, representation)
+# 
+# summary_table_final
+```
+
+```{r}
+# Export the table
+# summary_table_final %>%
+#   gt() %>%
+#   tab_header(title = "Distribution of the Tensed Hospitals") %>%
+#   gtsave("../results/SAE_2024/tensed_hospitals_distribution.png")
+```
+
+1. Juridical status
+
+```{r}
+# Global reference
+global_status <- SAE_2024 %>%
+  count(juridical_status) %>%
+  mutate(percentage_global = n / sum(n) * 100) %>%
+  select(juridical_status, percentage_global)
+
+# Table
+tensed_hospitals %>%
+  count(juridical_status) %>%
+  mutate(percentage_tensed = n / sum(n) * 100) %>%
+  left_join(global_status, by = "juridical_status")
+```
+
+```{r}
+# Create a binary variable for being in the tensed group
+temp_status <- SAE_2024 %>%
+  mutate(is_tensed = ifelse(
+    dep_doctors_per_1000 < median(dep_doctors_per_1000, na.rm = TRUE) & 
+    patients_per_doctor_win > median(patients_per_doctor_win, na.rm = TRUE),
+    "Tensed", "Not Tensed"
+  ))
+
+# Table of counts for the Chi-squared test
+table_stats <- table(temp_status$is_tensed, SAE_2024$juridical_status)
+table_stats
+
+# Chi-squared test
+prop.test(table_stats[, "Public"], rowSums(table_stats))
+prop.test(table_stats[, "Privé lucratif"], rowSums(table_stats))
+prop.test(table_stats[, "Privé non lucratif"], rowSums(table_stats))
+```
+
+No statistically significant difference between the proportion of public and private hospitals in the tensed group compared to the whole dataset.
+
+2. Regulation
+
+```{r}
+# Global reference
+global_reg <- SAE_2024 %>%
+  count(regulation) %>%
+  mutate(percentage_global = n / sum(n) * 100) %>%
+  select(regulation, percentage_global)
+
+# Table
+tensed_hospitals %>%
+  count(regulation) %>%
+  mutate(percentage_tensed = n / sum(n) * 100) %>%
+  left_join(global_reg, by = "regulation") %>%
+  mutate(regulation = case_when(
+      regulation == 3 ~ "Yes, all the time",
+      regulation == 2 ~ "Yes, part of the time",
+      regulation == 1 ~ "No"
+  ))
+```
+
+
+```{r}
+# Create a binary variable for being in the tensed group
+temp_reg <- SAE_2024 %>%
+  mutate(is_tensed = ifelse(
+    dep_doctors_per_1000 < median(dep_doctors_per_1000, na.rm = TRUE) &
+    patients_per_doctor_win > median(patients_per_doctor_win, na.rm = TRUE),
+    "Tensed", "Not Tensed"
+  ))
+
+# Table of counts for the Chi-squared test
+table_reg <- table(temp_reg$is_tensed, SAE_2024$regulation)
+table_reg
+
+# Chi-squared test
+prop.test(table_reg[, "1"], rowSums(table_reg))
+prop.test(table_reg[, "2"], rowSums(table_reg))
+prop.test(table_reg[, "3"], rowSums(table_reg))
+
+```
+
+Same.
+
+3. Type
+
+```{r}
+# Global reference
+global_type <- SAE_2024 %>%
+  count(emergency_type) %>%
+  mutate(percentage_global = n / sum(n) * 100) %>%
+  select(emergency_type, percentage_global)
+
+# Table
+tensed_hospitals %>%
+  count(emergency_type) %>%
+  mutate(percentage_tensed = n / sum(n) * 100) %>%
+  left_join(global_type, by = "emergency_type") %>%
+  mutate(emergency_type = case_when(
+      emergency_type == 1 ~ "Pediatric",
+      emergency_type == 2 ~ "General",
+      emergency_type == 3 ~ "Both"
+  ))
+```
+
+```{r}
+# Create a binary variable for being in the tensed group
+temp_type <- SAE_2024 %>%
+  mutate(is_tensed = ifelse(
+    dep_doctors_per_1000 < median(dep_doctors_per_1000, na.rm = TRUE) &
+    patients_per_doctor_win > median(patients_per_doctor_win, na.rm = TRUE),
+    "Tensed", "Not Tensed"
+  ))
+
+# Table of counts for the Chi-squared test
+table_type <- table(temp_type$is_tensed, SAE_2024$emergency_type)
+table_type
+
+# Chi-squared test
+prop.test(table_type[, "1"], rowSums(table_type))
+prop.test(table_type[, "2"], rowSums(table_type))
+prop.test(table_type[, "3"], rowSums(table_type))
+```
+
+Difference stat signif at the 5% threshold for general hospitals: they are overrepresented in the tensed group compared to the whole dataset.
+
+4. Capacity
+
+```{r}
+# Global reference
+global_cap <- SAE_2024 %>%
+  count(capacity) %>%
+  mutate(percentage_global = n / sum(n) * 100) %>%
+  select(capacity, percentage_global)
+
+# Table
+tensed_hospitals %>%
+  count(capacity) %>%
+  mutate(percentage_tensed = n / sum(n) * 100) %>%
+  left_join(global_cap, by = "capacity")
+```
+
+```{r}
+# Create a binary variable for being in the tensed group
+temp_cap <- SAE_2024 %>%
+  mutate(is_tensed = ifelse(
+    dep_doctors_per_1000 < median(dep_doctors_per_1000, na.rm = TRUE) & 
+    patients_per_doctor_win > median(patients_per_doctor_win, na.rm = TRUE),
+    "Tensed", 
+    "Not Tensed"
+  ))
+
+# Table of counts for the Chi-squared test
+table_cap <- table(temp_cap$is_tensed, SAE_2024$capacity)
+table_cap
+
+# Chi-squared test
+prop.test(table_cap[, "High capacity"], rowSums(table_cap))
+prop.test(table_cap[, "Medium capacity"], rowSums(table_cap))
+prop.test(table_cap[, "Low capacity"], rowSums(table_cap))
+```
+
+Difference stat signif at the 1% threshold for high capacity hospitals: they are overrepresented in the tensed group compared to the whole dataset.
+Difference stat signif at the 1% threshold for low capacity hospitals: they are underrepresented in the tensed group compared to the whole dataset.
+
+```{r}
+# Create a table with the percentage_tensed and the percentage_global across the four variables
+tensed_summary <- tensed_hospitals %>%
+  count(juridical_status, regulation, emergency_type, capacity) %>%
+  group_by(juridical_status) %>%
+  mutate(percentage_tensed = n / sum(n) * 100) %>%
+  left_join(global_status, by = "juridical_status") %>%
+  group_by(regulation) %>%
+  mutate(percentage_tensed = n / sum(n) * 100) %>%
+  left_join(global_reg, by = "regulation") %>%
+  group_by(emergency_type) %>%
+  mutate(percentage_tensed = n / sum(n) * 100) %>%
+  left_join(global_type, by = "emergency_type") %>%
+  group_by(capacity) %>%
+  mutate(percentage_tensed = n / sum(n) * 100) %>%
+  left_join(global_cap, by = "capacity")
+
+tensed_summary
+```
+
+
+--> Check if those are the same hospitals as the ones we identified as overloaded in the first part (high number of visits but low capacity).
+
+
+```{r}
+# Create a table with the percentage_tensed and the percentage_global across the four variables
+tensed_summary <- tensed_hospitals %>%
+  count(juridical_status, regulation, emergency_type, capacity) %>%
+  group_by(juridical_status) %>%
+  mutate(percentage_tensed = n / sum(n) * 100) %>%
+  left_join(global_status, by = "juridical_status") %>%
+  group_by(regulation) %>%
+  mutate(percentage_tensed = n / sum(n) * 100) %>%
+  left_join(global_reg, by = "regulation") %>%
+  group_by(emergency_type) %>%
+  mutate(percentage_tensed = n / sum(n) * 100) %>%
+  left_join(global_type, by = "emergency_type") %>%
+  group_by(capacity) %>%
+  mutate(percentage_tensed = n / sum(n) * 100) %>%
+  left_join(global_cap, by = "capacity")
+
+tensed_summary
+
+
+```
+
+
+# 3. Severity analysis: hosp_rate
+
+We first want to know if those hossitals that have a high rate of patients per doctor and a low rate of doctors to population are also the ones with the highest hospitalization rates (which could be a proxy for severity of cases).
+
+```{r}
+# Scatterplot of hospitalization rate vs. patients per doctor by hospital (with quadrants based on the median)
+ggplot(SAE_2024, aes(x = patients_per_doctor_win, y = hosp_rate_mod)) +
+  geom_point(alpha = 0.6) +
+  geom_vline(xintercept = median(SAE_2024$patients_per_doctor_win, na.rm = TRUE), linetype = "dashed", color = "red", size = 0.8) +
+  geom_hline(yintercept = median(SAE_2024$hosp_rate_mod, na.rm = TRUE), linetype = "dashed", color = "red", size = 0.8) +
+  labs(
+    title = "Correlation between Patients per Doctor and Hospitalization Rate at the Hospital Level",
+    subtitle = "Quadrants divided by median values",
+    x = "Patients per Doctor (winsorized)",
+    y = "Hospitalization Rate (modified)"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+# Check correlation
+cor(tensed_hospitals$patients_per_doctor_win, tensed_hospitals$hosp_rate_mod, use = "complete.obs")
+cor(SAE_2024$patients_per_doctor_win, SAE_2024$hosp_rate_mod, use = "complete.obs")
+
+# Test correlation
+cor.test(tensed_hospitals$patients_per_doctor_win, tensed_hospitals$hosp_rate_mod, use = "complete.obs")
+cor.test(SAE_2024$patients_per_doctor_win, SAE_2024$hosp_rate_mod, use = "complete.obs")
+```
+
+Statistically significant negative correlation at the 1% threshold for both the whole dataset and the tensed hospitals dataset, ie the more patients per doctor, the lower the hospitalization rate.
+The order of magnitude is different though: -0.15 for the whole dataset, -0.3 for the tensed hospitals dataset, which means that the correlation is stronger for the tensed hospitals than for the whole dataset.
+
+
+We then study the characteristics of the hospitals in the top left corner of the scatterplot (low doctors per inhabitant, high patients per doctor) to see if they are also the ones with the highest hospitalization rates.
+
+```{r}
+# Scatterplot: x axis = doctors to population, y axis = patients per doctor, color (gradient) = hospitalization rate, with quadrants based on the median
+hosp_scatter <- ggplot(SAE_2024, aes(x = dep_doctors_per_1000, y = patients_per_doctor_win, color = hosp_rate_mod)) +
+  geom_point(alpha = 0.6) +
+  geom_vline(xintercept = median(SAE_2024$dep_doctors_per_1000, na.rm = TRUE), linetype = "dashed", color = "red", size = 0.8) +
+  geom_hline(yintercept = median(SAE_2024$patients_per_doctor_win, na.rm = TRUE), linetype = "dashed", color = "red", size = 0.8) +
+  scale_color_viridis_c(option = "magma", name = "Hospitalization Rate (modified)") +
+  labs(
+    title = "Correlation between Doctors per Inhabitant, Patients per Doctor and Hospitalization Rate",
+    subtitle = "Quadrants divided by median values",
+    x = "Doctors per 1000 Inhabitants in the Department",
+    y = "Patients per Doctor (winsorized)"
+  ) +
+  theme_minimal()
+
+hosp_scatter
+```
+
+We isolate the hospitals in the top left corner (low doctors per inhabitant, high patients per doctor) and check if they are also the ones with the highest hospitalization rates.
+
+```{r}
+ggsave("../results/SAE_2024/hosp_scatter.png", hosp_scatter, width = 10, height = 8)
+```
+
+```{r}
+# Zoom in the scatter plot in the top left corner
+ggplot(tensed_hospitals, aes(x = dep_doctors_per_1000, y = patients_per_doctor_win, color = hosp_rate_mod)) +
+  geom_point(alpha = 0.6) +
+  scale_color_viridis_c(option = "magma", name = "Hospitalization Rate (modified)") +
+  labs(
+    title = "Hospitals with Low Doctors per Inhabitant and High Patients per Doctor",
+    x = "Doctors per 1000 Inhabitants in the Department",
+    y = "Patients per Doctor (winsorized)"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+# Identify hospitals from this scatterplot that have a high hosp rate (above the median of the tensed hospitals)
+tensed_hospitals_2 <- tensed_hospitals %>%
+  filter(hosp_rate_mod > median(tensed_hospitals$hosp_rate_mod, na.rm = TRUE)) %>%
+  select(finess, establishment_name, dep_number, patients_per_doctor_win, hosp_rate_mod) %>%
+  arrange(desc(hosp_rate_mod))
+
+# Count the number of hospitals per department in the main dataset
+hospitals_per_department <- SAE_2024 %>%
+  count(dep_number) %>%
+  rename(total_dep_hospitals = n)
+```
+
+We then plot those hospitals on a map to see where they are located in France.
+
+```{r}
+# 1. Calculate counts and rates per department
+# We start by counting how many "tensed" hospitals are in each department
+tensed_counts <- tensed_hospitals_2 %>%
+  count(dep_number, name = "tensed_count")
+
+# 2. Prepare the map data with the rate calculation
+map_data <- departments_geo %>%
+  # Join with the counts of tensed hospitals
+  left_join(tensed_counts, by = c("code" = "dep_number")) %>%
+  # Join with the total hospital counts per department (from your existing hospitals_per_department)
+  left_join(hospitals_per_department, by = c("code" = "dep_number")) %>%
+  # Replace NA with 0 for departments with no tensed hospitals
+  mutate(tensed_count = replace_na(tensed_count, 0)) %>%
+  # Calculate the rate
+  mutate(tensed_rate = tensed_count / total_dep_hospitals) %>%
+  # Filter out departments with no hospitals at all if necessary, or keep them to show 0%
+  filter(!is.na(total_dep_hospitals)) %>% 
+  # Ensure the point is inside the department
+  mutate(centroid = st_point_on_surface(geometry),
+         lon = st_coordinates(centroid)[,1],
+         lat = st_coordinates(centroid)[,2])
+
+map_data <-  map_data %>%
+  arrange(desc(tensed_rate))
+
+# 3. Create the Map using the rate
+hosp_map <- ggplot() +
+  geom_sf(data = departments_geo, fill = "gray95", color = "white") +
+  geom_point(data = map_data, 
+             aes(x = lon, y = lat, size = tensed_rate, color = tensed_rate),
+             alpha = 0.8) +
+  # Format the legend as percentages
+  scale_size_continuous(name = "Tensed Hospital Rate", 
+                        range = c(2, 12),
+                        labels = scales::percent_format(accuracy = 1)) +
+  scale_color_viridis_c(name = "Tensed Hospital Rate", 
+                        option = "viridis",
+                        labels = scales::percent_format(accuracy = 1)) +
+  theme_void() +
+  theme(legend.position = "right") +
+  labs(title = "Share of Tensed Hospitals by Department",
+       subtitle = "Percentage of hospitals with high hospitalization rate relative to department total")
+
+hosp_map
+```
+
+```{r}
+ggsave("../results/SAE_2024/hosp_map.png", hosp_map, width = 10, height = 8)
+```
+
+We study this rate across juridical status and regulation dimensions to see if the departments with the highest rate of tensed hospitals are also the ones with the highest share of private hospitals or the lowest regulation. TO DO
+
+
+We also study the hospitalization rates as a proxy for the times when it was necessary to come to the emergency.
+
+```{r}
+map_data_general <- SAE_2024 %>%
+  group_by(dep_number) %>%
+  summarise(avg_hosp_rate = median(hosp_rate_mod, na.rm = TRUE), .groups = "drop") %>%
+  left_join(departments_geo %>% select(code, geometry), by = c("dep_number" = "code")) %>%
+  filter(!is.na(n)) %>%
+  # Ensure the point is inside the department
+  mutate(centroid = st_point_on_surface(geometry),
+         lon = st_coordinates(centroid)[,1],
+         lat = st_coordinates(centroid)[,2])
+
+# Plot the map with points sized by hospitalization rate
+ggplot() +
+  geom_sf(data = departments_geo, fill = "gray", color = "white") +
+  geom_point(data = map_data_general, 
+             aes(x = lon, y = lat, color = avg_hosp_rate),
+             alpha = 0.8) +
+  #scale_size_continuous(name = "Hospitalization Rate (modified)", range = c(2, 12)) +
+  scale_color_viridis_c(name = "Hospitalization Rate (modified)", option = "magma") +
+  theme_void() +
+  theme(legend.position = "right") +
+  labs(title = "Hospitalization Rate (modified) by Hospital Location")
+
+ggsave("../results/SAE_2024/hosp_rate_map.png", width = 10, height = 8)
+
+```
+
+
+# 4. Personnel analysis
+
+```{r}
+
+```
+
+
+
+
+```{r}
+# Import dataset with the total number of emergency doctors
+Q20 <- read_csv2("../data/raw/SAE_2024/Q20_2024r.csv")
+
+# Clean dataset
+Q20 <-  Q20 %>%
+  filter(PERSO == "M1340") %>%
+  select(FI, AN, RS, EFFSAL) %>%
+  rename(finess = FI)
+
+# Merge with the main dataset
+SAE_2024 <- SAE_2024 %>%
+  left_join(Q20, by = "finess") %>%
+  rename(total_number_doctors = EFFSAL) %>%
+  select(-AN, -RS)
+
+# Check NAs and values 0 in total_number_doctors
+sum(is.na(SAE_2024$total_number_doctors))
+sum(SAE_2024$total_number_doctors == 0, na.rm = TRUE)
+
+# See if those are public
+SAE_2024 %>%
+  filter(is.na(total_number_doctors) | total_number_doctors == 0) %>%
+  count(juridical_status) %>%
+  mutate(percentage = n / sum(n) * 100)
+
+# Checks rows where etp_physicians_empl_emergency is NA ANS total_number_doctors is 0 or NA
+SAE_2024 %>%
+  filter(is.na(etp_physicians_empl_emergency) & (is.na(total_number_doctors) | total_number_doctors == 0)) %>%
+  count(juridical_status) %>%
+  mutate(percentage = n / sum(n) * 100)
+```
+
+
+
+
+
