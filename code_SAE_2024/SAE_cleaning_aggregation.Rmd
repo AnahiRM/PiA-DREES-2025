@@ -1,0 +1,246 @@
+---
+title: "SAE_cleaning_aggregation"
+author: "Louise Gatty"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+The last data cleaning thing we have to do is aggregate the hospitals that have both pediatric and general emergencies into one row.
+
+
+```{r setup, include=FALSE}
+rm(list=ls())
+
+path = "/Users/Louise/Desktop/Master/M1/PiA-DREES-local/code"
+setwd(path)
+
+# Load necessary libraries ----
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(readr)
+library(httr)
+library(readr)
+library(janitor)
+library(tidyverse)
+library(stringr)
+library(purrr)
+library(ggplot2)
+library(sf)
+library(viridis)
+library(scales)
+library(tibble)
+```
+
+# Import datasets ----
+
+```{r cars, message=FALSE}
+SAE_2024 <- read_csv2("../data/intermediate/SAE_cleaned_outliers_2024.csv")
+Legend <- read_csv2("../docs/SAE_2024/Legends_short.csv")
+```
+
+# Aggregate pediatric and general emergencies ----
+
+```{r}
+# Identify establishments with duplicate names
+duplicate_names <- SAE_2024 %>%
+  group_by(establishment_name) %>%
+  filter(n() > 1) %>%
+  pull(establishment_name) %>%
+  unique()
+
+# Create a dataset of the duplicate establishments for inspection
+inspection_duplicates <- SAE_2024 %>%
+  filter(establishment_name %in% duplicate_names) %>%
+  arrange(establishment_name)
+```
+
+- Information variables (year	finess	establishment_name	juridical_status	region_number	region_name	dep_number	dep_name	town_name	postal_code): keep the first
+
+- Capacity: drop the values, we will compute it again after the aggregation.
+
+- Sum total_hoptialized_emergency, beds_number, total_emergency_visits_raw.
+
+- All the following variables are the same for the duplicates. Compute the mean (in case we overlooked a difference) hours_physician_total_raw, hours_physicians_emergency_raw	hours_nurses_total_raw	hours_nurses_emergency_raw	hours_paramedics_raw	hours_regulation_physicians, hours_regulation_assistants,	etp_physicians_empl_total	etp_physicians_empl_emergency,	number_physicians_liberal	number_medecine_interns,	number_medecine_junior_doctors,	number_emergency_interns	number_emergency_junior_doctors, hours_physicians_total_mod	hours_physicians_emergency_mod	hours_nurses_total_mod	hours_nurses_emergency_mod	hours_regulation_assistants_raw	hours_regulation_assistants_mod	hours_paramedics_mod	etp_total_win	etp_emergency_win.
+
+- Dummies: keep the highest: waiting_monitoring, joint_personnel_SMUR_emergency, dummy_regulation_physicians	dummy_paramedics	dummy_regulation_assistants	dummy_number_liberal_phyisicians	dummy_joint_personnel, dummy_medecine_interns	dummy_emergency_interns	dummy_medecine_junior_doctors	dummy_emergency_junior_doctors.
+
+- Rates (hosp_rate_raw,	hosp_rate_mod): erase values. We will compute them again after the aggregation.
+
+- Winsorized/modified variables: drop total_emergency_visits_win and hosp_rate_mod. Apply the same correction after aggregation.
+
+We also replace the values of the emergency_type variable:
+- 1 if only PED,
+- 2 if only GEN,
+- 3 if both PED and GEN.
+
+```{r}
+SAE_final <- SAE_2024 %>%
+  group_by(establishment_name) %>%
+  summarise(
+    # Information variables
+    across(c(year, finess, juridical_status, region_number, region_name, 
+             dep_number, dep_name, town_name, postal_code), first),
+    
+    # Flow and beds variables
+    total_hospitalized_emergency = sum(total_hospitalized_emergency, na.rm = TRUE),
+    beds_number = sum(beds_number, na.rm = TRUE),
+    total_emergency_visits_raw = sum(total_emergency_visits_raw, na.rm = TRUE),
+    
+    # Personnel and hours: mean
+    across(c(
+      hours_physicians_total_raw, hours_physicians_emergency_raw, hours_nurses_total_raw, 
+      hours_nurses_emergency_raw, hours_paramedics_raw, hours_regulation_physicians, 
+      hours_regulation_assistants, etp_physicians_empl_total, etp_physicians_empl_emergency, 
+      number_physicians_liberal, number_medecine_interns, number_medecine_junior_doctors, 
+      number_emergency_interns, number_emergency_junior_doctors, hours_physicians_total_mod, 
+      hours_physicians_emergency_mod, hours_nurses_total_mod, hours_nurses_emergency_mod, 
+      hours_regulation_assistants_raw, hours_regulation_assistants_mod, hours_paramedics_mod, 
+      etp_total_win, etp_emergency_win
+    ), function(x) mean(x, na.rm = TRUE)),
+    
+    # Dummies & Regulation : Safe Max to avoid -Inf
+    across(c(
+      regulation, waiting_monitoring, joint_personnel_SMUR_emergency, dummy_regulation_physicians, 
+      dummy_paramedics, dummy_regulation_assistants, dummy_number_liberal_phyisicians, 
+      dummy_joint_personnel, dummy_medecine_interns, dummy_emergency_interns, 
+      dummy_medecine_junior_doctors, dummy_emergency_junior_doctors
+    ), function(x) {
+      if(all(is.na(x))) return(NA_real_)
+      max(x, na.rm = TRUE)
+    }),
+    
+    # Emergency type
+    emergency_type = case_when(
+      any(emergency_type == "GEN") & any(emergency_type == "PED") ~ 3,
+      all(emergency_type == "PED") ~ 1,
+      all(emergency_type == "GEN") ~ 2,
+      TRUE ~ 2
+    ),
+    
+    .groups = "drop"
+  ) %>%
+  
+  # New winsorization based on aggregated raw visits
+  mutate(
+    total_emergency_visits_win = ifelse(
+      total_emergency_visits_raw > quantile(total_emergency_visits_raw, 0.99, na.rm = TRUE),
+      quantile(total_emergency_visits_raw, 0.99, na.rm = TRUE),
+      total_emergency_visits_raw
+    )
+  ) %>%
+  
+  # Dual Rate computation
+  mutate(
+    hosp_rate_raw = (total_hospitalized_emergency / total_emergency_visits_raw) * 100,
+    hosp_rate_mod = (total_hospitalized_emergency / total_emergency_visits_win) * 100
+  )
+```
+```{r}
+# Check that the number of hospitals in SAE_final is the same as the number of unique establishment names in SAE_2024
+length(unique(SAE_2024$establishment_name)) == nrow(SAE_final)
+```
+
+We have the same number of variables as in SAE_2024 minus two, which is coherent.
+
+We still need to recalculate the capacity variable.
+
+```{r}
+# Compute new terciles of the beds_number variable in SAE_final
+terciles_final <- quantile(SAE_final$beds_number, probs = c(0, 1/3, 2/3, 1), na.rm = TRUE)
+
+# Create new capacity variable based on the new terciles
+SAE_final <- SAE_final %>%
+  mutate(capacity = case_when(
+    beds_number <= terciles_final[2] ~ "Low capacity",
+    beds_number <= terciles_final[3] ~ "Medium capacity",
+    beds_number >  terciles_final[3] ~ "High capacity"
+  )) %>%
+  mutate(capacity = factor(capacity, 
+                           levels = c("Low capacity", "Medium capacity", "High capacity")))
+```
+
+We still need to apply outlier correction to hosp_rate.
+
+```{r}
+# Create outlier detection function
+find_outliers <- function(data, variable) {
+  # Compute stats
+  stats <- data %>%
+    summarise(
+      q1 = quantile({{variable}}, 0.25, na.rm = TRUE),
+      q3 = quantile({{variable}}, 0.75, na.rm = TRUE),
+      iqr = q3 - q1
+    )
+  upper_limit <- stats$q3 + 1.5 * stats$iqr
+  lower_limit <- stats$q1 - 1.5 * stats$iqr
+  # Return results
+  data %>%
+    filter({{variable}} > upper_limit | {{variable}} < lower_limit) %>%
+    select(establishment_name, beds_number, capacity, emergency_type, juridical_status, {{variable}})
+}
+
+# Apply to hosp_rate_raw
+outliers_hosp_rate <- find_outliers(SAE_final, hosp_rate_raw)
+```
+
+Following the exact same logic as in the outlier cleaning code, we remove the two same outliers from hosp_rate.
+
+```{r}
+# Replace outliers with median value for CH CHAUNY and CH DE VIERZON
+SAE_final <- SAE_final %>%
+  mutate(
+    hosp_rate_mod = ifelse(
+      establishment_name %in% c("CH CHAUNY", "CH DE VIERZON"),
+      median(hosp_rate_raw, na.rm = TRUE),
+      hosp_rate_raw
+    )
+  )
+```
+
+We now have the exact same number of variables as in the SAE_2024 dataset.
+
+We reorder the variables for clarity.
+
+```{r}
+# Reordering variables for readability
+SAE_final <- SAE_final %>%
+  select(
+    # 1. Identification & Geography
+    year, establishment_name, finess, 
+    region_number, region_name, dep_number, dep_name, town_name, postal_code,
+    
+    # 2. Hospital Structure & Characteristics
+    juridical_status, capacity, beds_number, emergency_type, regulation,
+    
+    # 3. Activity Metrics (Raw & Processed)
+    total_emergency_visits_raw, total_emergency_visits_win,
+    total_hospitalized_emergency, 
+    hosp_rate_raw, hosp_rate_mod,
+    
+    # 4. Staffing - Physicians & Junior Doctors
+    number_physicians_liberal, 
+    number_medecine_interns, number_medecine_junior_doctors,
+    number_emergency_interns, number_emergency_junior_doctors,
+    etp_physicians_empl_total, etp_physicians_empl_emergency,
+    
+    # 5. Hours & ETP (Raw & Modified)
+    starts_with("hours_physicians"),
+    starts_with("hours_nurses"),
+    starts_with("hours_paramedics"),
+    starts_with("hours_regulation"),
+    starts_with("etp_"),
+    
+    # 6. Dummies (Binary indicators)
+    starts_with("dummy_"),
+    waiting_monitoring, joint_personnel_SMUR_emergency,
+    
+    # Everything else (if any were missed)
+    everything()
+  )
+```
+
+```{r}
+# Save the final cleaned and aggregated dataset
+write_csv2(SAE_final, "../data/processed/SAE_final_2024.csv")
+```

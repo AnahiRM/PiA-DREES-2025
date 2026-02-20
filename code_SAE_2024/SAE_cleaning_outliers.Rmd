@@ -1,0 +1,568 @@
+---
+title: "SAE_cleaning_outliers"
+author: "Louise Gatty"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+path = "/Users/Louise/Desktop/Master/M1/PiA-DREES-local/code"
+setwd(path)
+
+# Load necessary libraries ----
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(readr)
+library(httr)
+library(readr)
+library(janitor)
+library(tidyverse)
+library(stringr)
+library(purrr)
+library(ggplot2)
+library(sf)
+library(viridis)
+library(scales)
+library(tibble)
+```
+
+# Import datasets ----
+
+```{r cars, message=FALSE}
+SAE_2024 <- read_csv2("../data/intermediate/SAE_cleaned_NA_2024.csv")
+Legend <- read_csv2("../docs/SAE_2024/Legends_short.csv")
+```
+
+
+# Data cleaning: outliers detection and treatment ----
+
+```{r}
+# Create function to find outliers
+find_outliers <- function(data, variable) {
+  # Compute stats
+  stats <- data %>%
+    summarise(
+      q1 = quantile({{variable}}, 0.25, na.rm = TRUE),
+      q3 = quantile({{variable}}, 0.75, na.rm = TRUE),
+      iqr = q3 - q1
+    )
+  upper_limit <- stats$q3 + 1.5 * stats$iqr
+  lower_limit <- stats$q1 - 1.5 * stats$iqr
+  # Return results
+  data %>%
+    filter({{variable}} > upper_limit | {{variable}} < lower_limit) %>%
+    select(establishment_name, beds_number, capacity, emergency_type, juridical_status, {{variable}})
+}
+```
+
+## Total_emergency_visits
+
+```{r}
+# Boxplot for total_emergency_visits
+ggplot(SAE_2024) +
+  aes(y = total_emergency_visits) +
+  geom_boxplot(fill = "steelblue") +
+  theme_minimal() +
+  labs(title = "Boxplot of total emergency visits")
+```
+
+```{r}
+outliers_visits <- find_outliers(SAE_2024, total_emergency_visits)
+```
+
+This reveals situations of extreme tension (e.g., CH Avignon), but they don't seem to be an error of filling of the SAE survey. We will use the observations as they are for the descriptive statistics. For the further multidimensional analysis, to prevent these atypical observations from exerting excessive leverage on the regression coefficients, we winsorized the activity variables at the 99th percentile.
+
+```{r}
+SAE_2024 <- SAE_2024 %>%
+  mutate(
+    # Keep original variable
+    total_emergency_visits_raw = total_emergency_visits, 
+    # Create winsorized variable
+    total_emergency_visits_win = ifelse(
+      total_emergency_visits > quantile(total_emergency_visits, 0.99, na.rm = TRUE),
+      quantile(total_emergency_visits, 0.99, na.rm = TRUE),
+      total_emergency_visits
+    )
+  )
+
+# Drop total_emergency_visits duplicate
+SAE_2024 <- SAE_2024 %>%
+  select(-total_emergency_visits)
+```
+
+## Total_hospitalized_emergency
+
+```{r}
+# Boxplot for total_hospitalized_emergency
+ggplot(SAE_2024) +
+  aes(y = total_hospitalized_emergency) +
+  geom_boxplot(fill = "steelblue") +
+  theme_minimal() +
+  labs(title = "Boxplot of total hospitalized emergency patients")
+```
+We first check that no value is higher than the total number of emergency visits, which would be an obvious filling error.
+
+```{r}
+SAE_2024 %>%
+  filter(total_hospitalized_emergency > total_emergency_visits_raw) %>%
+  select(establishment_name, total_emergency_visits_raw, total_hospitalized_emergency)
+```
+
+We then apply the function to find outliers for this variable.
+
+```{r}
+outliers_hosp <- find_outliers(SAE_2024, total_hospitalized_emergency)
+```
+
+The outliers identified correspond to large hospitals (CHU, CHR) with a high capacity, but we make a further check on the ratio of hospitalized emergency patients to total emergency visits.
+
+```{r}
+# Create hospitalization rate
+SAE_2024 <- SAE_2024 %>%
+  mutate(hosp_rate = total_hospitalized_emergency / total_emergency_visits_win)
+
+# Boxplot for hospitalization rate
+ggplot(SAE_2024) +
+  aes(y = hosp_rate) +
+  geom_boxplot(fill = "steelblue") +
+  theme_minimal() +
+  labs(title = "Boxplot of hospitalization rate")
+```
+
+```{r}
+outliers_hosp_rate <- find_outliers(SAE_2024, hosp_rate)
+```
+
+The outliers were analyzed and treated as follows based on their clinical context:
+
+- Clerical Errors (CH Chauny, CH de Vierzon): Both facilities reported a 100% admission rate. This is statistically impossible for general emergency services (GEN), suggesting a reporting error where the number of visits was duplicated in the hospitalizations column. These values were replaced by the median rate of the sample.
+
+- Specialized Clinical Profiles (CHRU Nancy Maternité, CH Auch, CH Saint-Malo): These high rates were preserved as they reflect specific medical activities. CHRU Nancy Maternité (80%) and CH Auch (56%) handle high-risk pediatric and obstetric cases where admission is the standard outcome. Similarly, GHRE Saint-Malo (44%) serves as a major regional hub with a high severity case-mix.
+
+- Regional Referral Centers (CHU Pellegrin, Claude Bernard, CH Fontenay, CH Châteaubriant): High rates in these centers—CHU Pellegrin (49.5%), Hôpital Claude Bernard (49.5%), CH Châteaubriant (57%), and CH Fontenay (45%)—were maintained. These figures are consistent with their roles as primary referral centers for serious pathologies or 'Trauma Centers,' where a significant portion of arrivals requires immediate inpatient care.
+
+```{r}
+# Replace outliers with median value for CH CHAUNY and CH DE VIERZON
+SAE_2024 <- SAE_2024 %>%
+  mutate(
+    hosp_rate_mod = ifelse(
+      establishment_name %in% c("CH CHAUNY", "CH DE VIERZON"),
+      median(hosp_rate, na.rm = TRUE),
+      hosp_rate
+    )
+  ) %>%
+  rename(hosp_rate_raw = hosp_rate)
+```
+
+```{r}
+# Drop outliers datasets
+rm(outliers_visits, outliers_hosp, common_outliers, incoherent_hosp)
+```
+
+## Hours_physicians_total and hours_physicians_emergency
+
+```{r}
+# Boxplot for hours_physicians_total
+ggplot(SAE_2024) +
+  aes(y = hours_physicians_total) +
+  geom_boxplot(fill = "steelblue") +
+  theme_minimal() +
+  labs(title = "Boxplot of total physician hours")
+
+# Bowplot for hours_physicians_emergency
+ggplot(SAE_2024) +
+  aes(y = hours_physicians_emergency) +
+  geom_boxplot(fill = "steelblue") +
+  theme_minimal() +
+  labs(title = "Boxplot of emergency physician hours")
+```
+
+
+```{r}
+outliers_hours_phy <- find_outliers(SAE_2024, hours_physicians_total)
+outliers_hours_emerg <- find_outliers(SAE_2024, hours_physicians_emergency)
+```
+
+*Hours_physicians_total:*
+
+3 hospitals have a number of hours around 18000 or 20000. It seems highly unlikely that these values are correct. We replace these numbers with the median value of the variable.
+
+"CH HIRSON" appears to have a very large number of physicians hour for its size (low capacity). There is no particular evidence documented online on a particularly tensed situation in this hospital. We therefore decide to replace this value by the median of the variable.
+
+The other outliers correspond to very large hospitals (CHU, CHR) with a high capacity. We decide to keep these values as they are.
+
+*Hours_physicians_emergency:*
+
+The variable has extremely high values for "HOPITAUX DU GRAND COGNAC" and "CLINIQUE ESQUIROL-SAINT-HILAIRE", which both presented the outliers in the previous variable. We replace these values with the median value of the variable.
+
+Again, "CH HIRSON" appears to have a very large number of physicians hour for its size (low capacity). We replace this value by the median of the variable.
+
+The other outliers correspond to very large hospitals (CHU, CHR) with a high capacity. We decide to keep these values as they are.
+
+```{r}
+SAE_2024 <- SAE_2024 %>%
+  mutate(
+    hours_physicians_total_mod = ifelse(
+      hours_physicians_total > 15000 | str_detect(establishment_name, "HIRSON"),
+      median(hours_physicians_total, na.rm = TRUE),
+      hours_physicians_total
+    ),
+    hours_physicians_emergency_mod = ifelse(
+      hours_physicians_emergency > 5000 | str_detect(establishment_name, "HIRSON"),
+      median(hours_physicians_emergency, na.rm = TRUE),
+      hours_physicians_emergency
+    )
+  )
+
+# Rename original variable
+SAE_2024 <- SAE_2024 %>%
+    rename(hours_physicians_total_raw = hours_physicians_total) %>%
+    rename(hours_physicians_emergency_raw = hours_physicians_emergency)
+
+# Drop outliers dataset
+rm(outliers_hours_phy, outliers_hours_emerg)
+```
+
+## Hours_nurses_total and hours_nurses_emergency
+
+```{r}
+# Boxplot for hours_nurses_total
+ggplot(SAE_2024) +
+  aes(y = hours_nurses_total) +
+  geom_boxplot(fill = "steelblue") +
+  theme_minimal() +
+  labs(title = "Boxplot of total nurse hours")
+
+# Boxplot for hours_nurses_emergency
+ggplot(SAE_2024) +
+  aes(y = hours_nurses_emergency) +
+  geom_boxplot(fill = "steelblue") +
+  theme_minimal() +
+  labs(title = "Boxplot of emergency nurse hours")
+```
+```{r}
+outilers_hours_nurses_total <- find_outliers(SAE_2024, hours_nurses_total)
+outliers_hours_nurses_emerg <- find_outliers(SAE_2024, hours_nurses_emergency)
+```
+
+"HOPITAL LOZERE SITE VALLEE DU LOT" has 9 000 nurses hours in total, which seems very high for a hospital with a capacity of 40 beds. We replace this value by the median of the variable. This hospital does not appear in the outliers for the emergency nurse hours.
+
+Again, "HOPITAUX DU GRAND COGNAC" has 30 000 nurses hours in total and 22 000 for the emergency department, which can only be a filling mistake. We replace this value by the median of the variable.
+
+```{r}
+# Replace outliers with median value
+SAE_2024 <- SAE_2024 %>%
+  mutate(
+    hours_nurses_total_mod = ifelse(
+      hours_nurses_total > 6000,
+      median(hours_nurses_total, na.rm = TRUE),
+      hours_nurses_total
+    ),
+    hours_nurses_emergency_mod = ifelse(
+      hours_nurses_emergency > 6000,
+      median(hours_nurses_emergency, na.rm = TRUE),
+      hours_nurses_emergency
+    )
+  )
+
+# Rename original variable
+SAE_2024 <- SAE_2024 %>%
+    rename(hours_nurses_total_raw = hours_nurses_total) %>%
+    rename(hours_nurses_emergency_raw = hours_nurses_emergency)
+
+# Drop outliers dataset
+rm(outliers_hours_nurses_total, outliers_hours_nurses_emerg)
+```
+
+## Hours_regulation_physicians and hours_regulation_assistants
+
+```{r}
+# Boxplot for hours_regulation_physicians
+SAE_2024 %>%
+  filter(hours_regulation_physicians > 0) %>% # We remove the 0 values to better visualize the distribution of the variable
+  ggplot() +
+  aes(y = hours_regulation_physicians) +
+  geom_boxplot(fill = "steelblue") +
+  theme_minimal() +
+  labs(title = "Boxplot of regulation physician hours")
+
+# Boxplot for hours_regulation_assistants
+SAE_2024 %>%
+  filter(hours_regulation_assistants > 0) %>% # We remove the 0 values to better visualize the distribution of the variable
+  ggplot() +
+  aes(y = hours_regulation_assistants) +
+  geom_boxplot(fill = "steelblue") +
+  theme_minimal() +
+  labs(title = "Boxplot of regulation assistant hours")
+```
+
+Here we create a new function that detect outliers only among the non-zero values of the variable, as there are many establishments with 0 hours of regulation physicians or assistants, which makes it difficult to visualize the distribution of the variable and to detect outliers.
+
+```{r}
+find_outliers_nonzero <- function(data, variable) {
+  # On travaille uniquement sur ceux qui ont de l'activité
+  active_data <- data %>% filter({{variable}} > 0)
+  
+  stats <- active_data %>%
+    summarise(
+      q1 = quantile({{variable}}, 0.25, na.rm = TRUE),
+      q3 = quantile({{variable}}, 0.75, na.rm = TRUE),
+      iqr = q3 - q1
+    )
+  
+  upper_limit <- stats$q3 + 1.5 * stats$iqr
+  
+  active_data %>%
+    filter({{variable}} > upper_limit) %>%
+    select(establishment_name, capacity, {{variable}})
+}
+```
+
+
+```{r}
+outliers_hours_reg_phy <- find_outliers_nonzero(SAE_2024, hours_regulation_physicians)
+outliers_hours_reg_assist <- find_outliers_nonzero(SAE_2024, hours_regulation_assistants)
+```
+
+Hours_regulation_physicians: The outliers identified for regulation (Nantes, Lyon, Versailles) are retained because they are consistent with the activity of large SAMU centers (multiples of 168 hours/week).
+
+Hours_regulation_assistants: The entry for 'CH ARRAS' (2,344 hours) was identified as a clerical error, as it implies approximately 14 assistants present 24/7—a figure that is neither a multiple of the standard 168-hour weekly shift nor consistent with the staffing levels of larger university hospitals. Consequently, this value was replaced with the median of active facilities.     
+
+```{r}
+# Replace outlier with median value for active facilities
+SAE_2024 <- SAE_2024 %>%
+  mutate(
+    hours_regulation_assistants_raw = hours_regulation_assistants,
+    hours_regulation_assistants_mod = ifelse(
+      establishment_name == "CH ARRAS",
+      median(hours_regulation_assistants_raw[hours_regulation_assistants_raw > 0], na.rm = TRUE),
+      hours_regulation_assistants_raw
+    )
+  )
+
+# Drop outliers dataset
+rm(outliers_hours_reg_phy, outliers_hours_reg_assist)
+```
+
+## Hours_paramedics_total
+
+```{r}
+# Boxplot for hours_paramedics_total
+ggplot(SAE_2024) +
+  aes(y = hours_paramedics_total) +
+  geom_boxplot(fill = "steelblue") +
+  theme_minimal() +
+  labs(title = "Boxplot of total paramedic hours")
+```
+
+```{r}
+outliers_hours_paramedics <- find_outliers(SAE_2024, hours_paramedics_total)
+```
+
+The variable has extremely high values for "HOPITAUX DU GRAND COGNAC" and "HOPITAL LOZERE SITE VALLEE DU LOT", which can only be a filling mistake. We replace this value by the median of the variable.
+
+```{r}
+# Replace outliers with median value
+SAE_2024 <- SAE_2024 %>%
+  mutate(
+    hours_paramedics_mod = ifelse(
+      establishment_name %in% c("HOPITAUX DU GRAND COGNAC", "HOPITAL LOZERE SITE VALLEE DU LOT"),
+      median(hours_paramedics_total, na.rm = TRUE),
+      hours_paramedics_total
+    )
+  ) %>%
+  rename(hours_paramedics_raw = hours_paramedics_total)
+```
+
+## Etp_physicians_empl_total and etp_physicians_empl_emergency
+
+```{r}
+# Boxplot for etp_physicians_empl_total
+ggplot(SAE_2024) +
+  aes(y = etp_physicians_empl_total) +
+  geom_boxplot(fill = "steelblue") +
+  theme_minimal() +
+  labs(title = "Boxplot of total physician FTE")
+
+# Boxplot for etp_physicians_empl_emergency
+ggplot(SAE_2024) +
+  aes(y = etp_physicians_empl_emergency) +
+  geom_boxplot(fill = "steelblue") +
+  theme_minimal() +
+  labs(title = "Boxplot of emergency physician FTE")
+```
+We first check that total > emergency.
+
+```{r}
+SAE_2024 %>%
+  filter(etp_physicians_empl_emergency > etp_physicians_empl_total) %>%
+  select(establishment_name, etp_physicians_empl_total, etp_physicians_empl_emergency)
+```
+
+```{r}
+outliers_etp_physicians_total <- find_outliers(SAE_2024, etp_physicians_empl_total)
+outliers_etp_physicians_emergency <- find_outliers(SAE_2024, etp_physicians_empl_emergency)
+```
+
+These high values represent legitimate data from large-scale university hospitals; they are not measurement errors, but rather a reflection of the top-tier capacity within the French hospital system.
+
+For the descriptive analysis, we keep the medical staff variables (etp_physicians_empl_total and etp_physicians_empl_emergency) in their raw form in order to reflect the actual diversity of hospital capacities, particularly those of university hospitals (CHUs).
+
+However, for the purposes of inferential analysis (regressions), we winsorize these variables at the 95th percentile. This method limits the undue influence of extreme values on coefficient estimates, thereby preventing a few very large structures from dictating the statistical trend of the model on their own, while minimizing the loss of information compared to simply deleting the observations.
+
+```{r}
+# Calculate 95th percentile for both variables
+p95_total <- quantile(SAE_2024$etp_physicians_empl_total, 0.95, na.rm = TRUE)
+p95_emergency <- quantile(SAE_2024$etp_physicians_empl_emergency, 0.95, na.rm = TRUE)
+
+# Winsorize the variables at the 95th percentile
+SAE_2024 <- SAE_2024 %>%
+  mutate(
+    etp_total_win = ifelse(etp_physicians_empl_total > p95_total, p95_total, etp_physicians_empl_total),
+    etp_emergency_win = ifelse(etp_physicians_empl_emergency > p95_emergency, p95_emergency, etp_physicians_empl_emergency)
+  )
+```
+
+## Number_physicians_liberal
+
+```{r}
+# Rename number_physicians_liberal_total since we dropped number_physicians_liberal_emergency in the NA cleaning script
+SAE_2024 <- SAE_2024 %>%
+  rename(number_physicians_liberal = number_physicians_liberal_total)
+```
+
+```{r}
+# Boxplot
+SAE_2024 %>%
+  filter(number_physicians_liberal > 0) %>% # We remove the 0 values to better visualize the distribution of the variable
+  ggplot() +
+  aes(y = number_physicians_liberal) +
+  geom_boxplot(fill = "steelblue") +
+  theme_minimal() +
+  labs(title = "Boxplot of the number total liberal physicians")
+```
+
+```{r}
+outliers_liberal_tot <- find_outliers_nonzero(SAE_2024, number_physicians_liberal)
+```
+
+The outliers identified for liberal physicians (e.g., Hôpital Européen, Polyclinique St Roch, CHR Metz-Thionville) were maintained in the dataset. These values do not represent errors but reflect diverse management models: while public hospitals primarily employ salaried staff, private and mutualist facilities rely heavily on liberal practitioners for emergency coverage and on-call duties.
+
+```{r}
+# Drop outliers dataset
+rm(outliers_liberal_total)
+```
+
+## Number_emergency_interns and number_medecine_interns
+
+```{r}
+# Boxplot for number_emergency_interns (filter on the non-zero values to better visualize the distribution of the variable)
+SAE_2024 %>%
+  filter(number_emergency_interns > 0) %>% # We remove the 0 values to better visualize the distribution of the variable
+  ggplot() +
+  aes(y = number_emergency_interns) +
+  geom_boxplot(fill = "steelblue") +
+  theme_minimal() +
+  labs(title = "Boxplot of the number of emergency interns")
+
+# Boxplot for number_medecine_interns (filter on the non-zero values to better visualize the distribution of the variable)
+SAE_2024 %>%
+  filter(number_medecine_interns > 0) %>% # We remove the 0 values to better visualize the distribution of the variable
+  ggplot() +
+  aes(y = number_medecine_interns) +
+  geom_boxplot(fill = "steelblue") +
+  theme_minimal() +
+  labs(title = "Boxplot of the number of medicine interns")
+```
+
+We first check that the number of emergency interns is not higher than the number of medicine interns.
+
+```{r}
+temp <- SAE_2024 %>%
+  filter(number_emergency_interns > number_medecine_interns) %>%
+  select(establishment_name, number_emergency_interns, number_medecine_interns)
+```
+
+Discrepancies where emergency interns exceed medicine interns were found to be consistent with hospital organizational structures. In many facilities, the Emergency Department is a distinct administrative pole from the Internal Medicine department; therefore, interns assigned to emergencies are not necessarily counted within the medicine staff totals.
+
+```{r}
+outliers_emergency_interns <- find_outliers_nonzero(SAE_2024,number_emergency_interns)
+outliers_medicine_interns <- find_outliers_nonzero(SAE_2024, number_medecine_interns)
+```
+
+The identified outliers for interns seem to be consistent with the activity of large university hospitals, which often have a high number of interns. For example, CHU Pellegrin and CHRU Nancy Maternité are among the largest university hospitals in France, and it is expected that they would have a significant number of interns in both emergency and medicine departments. Therefore, we decide to keep these values as they are.
+
+## Number_emergency_junior_doctors and number_medecine_junior_doctors
+
+```{r}
+# Boxplot for number_emergency_junior_doctors (filter on the non-zero values to better visualize the distribution of the variable)
+SAE_2024 %>%
+  filter(number_emergency_junior_doctors > 0) %>%
+  ggplot() +
+  aes(y = number_emergency_junior_doctors) +
+  geom_boxplot(fill = "steelblue") +
+  theme_minimal() +
+  labs(title = "Boxplot of the number of emergency junior doctors")
+
+# Boxplot for number_medecine_junior_doctors (filter on the non-zero values to better visualize the distribution of the variable)
+SAE_2024 %>%
+  filter(number_medecine_junior_doctors > 0) %>%
+  ggplot() +
+  aes(y = number_medecine_junior_doctors) +
+  geom_boxplot(fill = "steelblue") +
+  theme_minimal() +
+  labs(title = "Boxplot of the number of medicine junior doctors")
+```
+
+```{r}
+outliers_emergency_junior_doctors <- find_outliers_nonzero(SAE_2024, number_emergency_junior_doctors)
+outliers_medicine_junior_doctors <- find_outliers_nonzero(SAE_2024, number_medecine_junior_doctors)
+```
+
+The identified outliers for Junior Doctors (senior residents) are consistent with the organizational hierarchy of the French hospital system. High concentrations in facilities such as CHU de Rouen, CHRU de Lille, or CHU de Dijon reflect their status as major academic training hubs with the accreditation to host senior residents in their final phase of specialization. These figures correlate with the high volume of specialized medical activity and the supervision requirements of these regional referral centers. Consequently, these values were retained as they represent the actual medical workforce distribution.
+
+
+Finally, we cross-referenced the outliers for interns and junior doctors across the emergency and medicine departments to identify institutional training profiles.
+
+```{r}
+# Create lists of outlier establishments for each category
+list_interns_emerg <- unique(outliers_emergency_interns$establishment_name)
+list_interns_med   <- unique(outliers_medicine_interns$establishment_name)
+list_juniors_emerg <- unique(outliers_emergency_junior_doctors$establishment_name)
+list_juniors_med   <- unique(outliers_medicine_junior_doctors$establishment_name)
+
+# Create a summary table to compare outliers across categories
+comparison_outliers <- SAE_2024 %>%
+  filter(establishment_name %in% c(list_interns_emerg, list_interns_med, 
+                                   list_juniors_emerg, list_juniors_med)) %>%
+  group_by(establishment_name) %>%
+  reframe(
+    is_outlier_intern_emerg  = establishment_name %in% list_interns_emerg,
+    is_outlier_intern_med    = establishment_name %in% list_interns_med,
+    is_outlier_junior_emerg  = establishment_name %in% list_juniors_emerg,
+    is_outlier_junior_med    = establishment_name %in% list_juniors_med,
+    # Calculate total flags to identify institutions that are outliers in multiple categories
+    total_flags = is_outlier_intern_emerg + is_outlier_intern_med + 
+                  is_outlier_junior_emerg + is_outlier_junior_med
+  ) %>%
+  # Keep only those that are outliers in less than 4 categories to focus on those with specific profiles rather than those that are outliers across the board
+  filter(total_flags < 4) %>%
+  arrange(total_flags)
+```
+
+
+The outliers for interns and junior doctors were cross-referenced across departments to identify institutional training profiles. No values were replaced by the median, as they accurately reflect the French hospital hierarchy:
+
+- Global Academic Hubs (Total Flags 3+): Facilities such as CHR Angers, CHU de Nantes, CHU Jean Minjoz (Besançon), CHU Nîmes, CHU Pellegrin (Bordeaux), and CHU Nord (Grenoble) consistently rank as outliers across nearly all categories. These are major regional referral centers where massive staffing levels are required to support their dual mission of high-volume emergency care and comprehensive medical education.
+
+- Specialized Referral Sites (Internal Medicine Outliers): Several centers show outlier levels exclusively in internal medicine. This includes major specialized sites like APHM La Timone, APHM Hôpital Nord, CHRU de Brest, CHRU Nancy, CHRU Rennes, CHU Amiens, CHU Caen, CHU Poitiers (La Miletrie), CHU de Rouen, CHU de Limoges, and Hôpital Gabriel Montpied (Clermont-Ferrand). Within Paris (APHP), sites like Pitié Salpêtrière, Cochin, Necker, and Kremlin-Bicêtre follow this pattern. These figures reflect their status as national hubs for medical sub-specialties rather than a specific over-concentration in emergency staffing.
+
+- Emergency-Centric Training Profiles: Certain facilities emerge as outliers primarily within the emergency pôle. This is the case for CH du Mans, Hôpital Percy (Clamart), and CHRU d'Orléans, which show disproportionately high numbers of interns in emergency services. Similarly, CH Côte Basque and CH NOVO (Pontoise) stand out specifically for their high numbers of Junior Doctors in emergency care, highlighting their role as frontline training grounds and their strategy of recruiting senior residents to manage high emergency flows.
+
+- Overseas Territorial Hubs: Outliers observed in C.H.U. de Pointe-à-Pitre, CHU de Martinique, and CHU de La Réunion (Saint-Pierre) were maintained. As the sole university-level referral centers for their respective territories, these hospitals must maintain a high concentration of medical residents to ensure regional health sovereignty.
+
+```{r}
+# Export cleaned dataset with outliers treated
+write_csv2(SAE_2024, "../data/intermediate/SAE_cleaned_outliers_2024.csv")
+```

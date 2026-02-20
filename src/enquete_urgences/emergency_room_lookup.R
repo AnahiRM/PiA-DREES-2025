@@ -11,6 +11,9 @@ library(dplyr)
 library(naniar)
 
 # 1. Open Enquète Urgences dataset
+
+# Open dataset
+
 enquete_2023 = read.csv2(
   file = paste0(path, "/Data/Raw/Enquête Urgences/CSV/2023 Enquête Urgences Structure (CSV).csv"),
   fileEncoding = "latin1") # Decode accented characters
@@ -184,3 +187,6 @@ View(er_data[er_data$nom_etab_1 != er_data$nom_etab_2, c("finess", "nom_etab_1",
 
 # 11. Save dataset as CSV
 write.csv2(er_data,  paste0(path, "/Data/Intermediate/Enquête Urgences/Emergency Room Lookup.csv"))
+
+# Save dataset
+write.csv2(er_names,  paste0(path, "/Data/Emergency Room Lookup.csv")) # Save as CSV file
