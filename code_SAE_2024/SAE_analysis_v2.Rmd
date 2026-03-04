@@ -30,6 +30,7 @@ library(viridis)
 library(scales)
 library(patchwork)
 library(rlang)
+library(gt)
 ```
 
 # Import datasets ----
@@ -557,11 +558,10 @@ vars_to_test <- c("emergency_type", "regulation", "juridical_status")
 ```{r}
 # Create contingency tables and run chi-squared tests for each variable
 results <- setNames(lapply(vars_to_test, function(v) analyze_overload_dist(SAE_2024, v)), vars_to_test)
-
 results
 ```
 ```{r}
-# Create a summary table for the distribution of overloaded vs non-overloaded hospitals for each variable, including the p-value of the chi-squared test, and the difference in percentage points between the overloaded distribution and the global distribution.
+# Create a summary table for the distribution of overloaded vs non-overloaded hospitals for each variable
 chi2_summary_table <- imap_dfr(results, function(res, var_name) {
   res$distribution_table %>%
     mutate(
@@ -603,17 +603,10 @@ chi2_summary_table
 ```{r}
 threshold <- quantile(SAE_2024$patients_per_doctor_win, 0.9, na.rm = TRUE)
 
-SAE_2024 <- SAE_2024 %>%
-  mutate(is_overloaded = if_else(
-    patients_per_doctor_win >= threshold, 
-    "Overloaded", 
-    "Not Overloaded"
-  ))
-
-# 2. Run the analysis (Ensure you've re-run the function above first!)
+# Run the analysis for each variable and store results in a list
 all_results <- setNames(lapply(vars_to_test, function(v) analyze_overload_dist(SAE_2024, v)), vars_to_test)
 
-# 3. Compile the single summary table with Labels
+# Compile the single summary table with labels
 summary_table <- imap_dfr(all_results, function(res, var_name) {
   res$distribution_table %>%
     mutate(
@@ -624,10 +617,10 @@ summary_table <- imap_dfr(all_results, function(res, var_name) {
     select(variable, category_code, pct_overloaded, pct_global, p_value)
 })
 
-# Map the labels and add the Difference column
+# Map the labels and add the difference column
 summary_table_final <- summary_table %>%
   mutate(
-    # 1. Map labels to codes
+    # Map labels to codes
     category_label = case_when(
       variable == "emergency_type" & category_code == "1" ~ "Pediatric",
       variable == "emergency_type" & category_code == "2" ~ "General",
@@ -637,31 +630,29 @@ summary_table_final <- summary_table %>%
       variable == "regulation" & category_code == "3" ~ "Full-time",
       TRUE ~ category_code 
     ),
-    # 2. Compute the Difference (Percentage Points)
+    # Compute the Difference (Percentage Points)
     pct_diff = pct_overloaded - pct_global,
     
-    # 3. Clean up formatting
+    # Clean up formatting
     across(starts_with("pct"), ~round(., 2)),
     p_value = format.pval(p_value, digits = 3, eps = 0.001),
     
-    # 4. Add a simple interpretation column
+    # Add interpretation column
     representation = ifelse(pct_diff > 0, "Over-represented", "Under-represented")
   ) %>%
   select(variable, category_label, pct_overloaded, pct_global, pct_diff, p_value, representation)
 
+# Display the final summary table
 summary_table_final
 ```
 
 ```{r}
-library(gt)
-
+# Export the summary table as a PNG image
 summary_table_final %>%
   gt() %>%
   tab_header(title = "Distribution of the Overloaded Hospitals") %>%
-  # Sauvegarde automatique à la bonne taille
   gtsave("../results/SAE_2024/overload_distribution_summary.png")
 ```
-
 
 # 2. Ratios of doctors per inhabitant, and visits per doctor ----
 
@@ -705,6 +696,17 @@ demographics <- demographics %>%
 # Drop rows 97, 103 and 104
 demographics <- demographics %>%
   slice(-c(97, 103, 104))
+```
+
+```{r}
+# Add the number of liberal physicians
+SAE_2024 <- SAE_2024 %>%
+  mutate(
+    # Convert liberals number to ETP
+    etp_liberals = number_physicians_liberal,
+    # Sum the ETP of employed physicians and liberals
+    etp_total_combine = etp_physicians_empl_emergency + etp_liberals,
+  )
 ```
 
 ```{r}
@@ -777,14 +779,12 @@ liberals_per_1000 <- ggplot(data = departments_geo) +
 ```{r}
 # Export the maps
 ggsave("../results/SAE_2024/doctors_per_1000_map.png", doctors_per_1000, width = 10, height = 8)
-ggsave("../results/SAE_2024/liberals_per_1000_map.png", liberals_per_1000, width = 10, height = 8)
+#ggsave("../results/SAE_2024/liberals_per_1000_map.png", liberals_per_1000, width = 10, height = 8)
 ```
-
-QUESTION FOR THE DREES: HOW IMPORTANT IS IT TO USE THE LIBERAL DOCTORS?
 
 --
 
-TO REFLECT ON: not sure it's useful to explore le fait que la où il y a peu de médecins par habitants les établsisements sont publics.
+TO REFLECT ON: not sure it's useful to explore le fait que la où il y a peu de médecins par habitants les établissements sont publics.
 
 We compare this ratio across juridical status and regulation dimensions.
 
@@ -804,27 +804,25 @@ ggplot(SAE_2024, aes(x = juridical_status, y = dep_doctors_per_1000)) +
 ```
 
 ```{r}
-# 1. Calculer la part du privé par département
+# Compute the average index of doctors per 1000 inhabitants by department, and the percentage of private hospitals in each department
 dep_analysis <- SAE_2024 %>%
   group_by(dep_number) %>%
   summarise(
     total_hospitals = n(),
-    # On compte les établissements privés (lucratifs + non-lucratifs)
     pct_private = sum(juridical_status %in% c("Privé lucratif", "Privé non lucratif")) / n() * 100,
-    # On récupère l'index (puisqu'il est identique pour tout le département, on prend la moyenne)
     index_urgences = mean(dep_doctors_per_1000, na.rm = TRUE)
   )
 
-# 2. Création du scatter plot
+# Scatter plot
 ggplot(dep_analysis, aes(x = pct_private, y = index_urgences)) +
   geom_point(aes(size = total_hospitals), alpha = 0.6, color = "steelblue") +
   geom_smooth(method = "lm", color = "red", se = FALSE, linetype = "dashed") +
   labs(
-    title = "Corrélation entre l'offre privée et la densité de médecins d'urgence",
-    subtitle = "Chaque point représente un département",
-    x = "Pourcentage d'hôpitaux privés dans le département (%)",
-    y = "Index ETP Urgences (pour 1000 hab)",
-    size = "Nombre d'hôpitaux"
+    title = "Correlation between the Percentage of Private Hospitals and the Index of Doctors per 1000 Inhabitants",
+    subtitle = "Each point represents a department, size of the points corresponds to the number of hospitals in the department",
+    x = "Percentage of Private Hospitals in the Department",
+    y = "Index of Doctors per 1000 Inhabitants",
+    size = "Number of Hospitals in the Department"
   ) +
   theme_minimal()
 ```
@@ -834,7 +832,7 @@ ggplot(dep_analysis, aes(x = pct_private, y = index_urgences)) +
 As mentioned in the data cleaning code on outliers, we use the raw variables in these calculations (bc the outliers didn't appear to be the result of a filling mistake).
 
 ```{r}
-# Calculate the ratio of visits per doctor (na.rm = TRUE to avoid division by zero)
+# Calculate the ratio of visits per doctor EMPLOYED
 SAE_2024 <- SAE_2024 %>% 
   mutate(patients_per_doctor = case_when(
     etp_physicians_empl_emergency == 0 ~ NA_real_,
@@ -842,30 +840,25 @@ SAE_2024 <- SAE_2024 %>%
     TRUE ~ total_emergency_visits_raw / etp_physicians_empl_emergency
   ))
 
+# Compute the ratio of visits per doctor employed AND LIBERAL
 SAE_2024 <- SAE_2024 %>%
   mutate(
-    # Conversion des libéraux en ETP estimés (poids de 0.8 à ajuster)
-    etp_liberals = number_physicians_liberal,
-    
-    # Addition des deux mondes
-    etp_total_combine = etp_physicians_empl_emergency + etp_liberals,
-    
-    # Nouveau ratio
     patients_per_doctor_combined = total_emergency_visits_raw / etp_total_combine
   )
 
+# Replace outliers by NA
 SAE_2024 <- SAE_2024 %>%
   mutate(patients_per_doctor_clean = case_when(
-      patients_per_doctor_combined > 10000 ~ NA_real_,  # Trop élevé (sous-déclaration personnel)
-      patients_per_doctor_combined < 300   ~ NA_real_,  # Trop faible (erreur ou structure quasi-fermée)
+      patients_per_doctor_combined > 10000 ~ NA_real_,  # Too high
+      patients_per_doctor_combined < 300   ~ NA_real_,  # Too low
       is.infinite(patients_per_doctor_combined) ~ NA_real_,
-      TRUE ~ patients_per_doctor_combined               # Valeur conservée si elle est dans l'intervalle
+      TRUE ~ patients_per_doctor_combined
     )
   )
 
+# Rename the original patients_per_doctor variable to keep it for comparison, and rename the cleaned one to patients_per_doctor
 SAE_2024 <-  SAE_2024 %>%
   rename(patients_per_doctor_empl = patients_per_doctor)
-
 SAE_2024 <-  SAE_2024 %>%
   rename(patients_per_doctor = patients_per_doctor_clean)
 ```
@@ -887,19 +880,19 @@ In several cases, such as Hôpital Privé de Vitry, APHM Hôpital La Timone, and
 To preserve these observations while preventing these 'artificial' efficiencies from biasing the regression coefficients, we winsorize the ratio at the 99th percentile. This approach retains the high-activity nature of these centers but caps their impact at a statistically plausible upper bound.
 
 ```{r}
-# # Winsorize the patients_per_doctor variable at 99%
-# SAE_2024 <- SAE_2024 %>%
-#   mutate(patients_per_doctor_win = ifelse(
-#     patients_per_doctor > quantile(patients_per_doctor, 0.99, na.rm = TRUE),
-#     quantile(patients_per_doctor, 0.99, na.rm = TRUE),
-#     patients_per_doctor
-#   ))
-# 
-# # Update the ratio_by_department dataset with the winsorized variable
-# rm(ratio_by_department)
-# ratio_by_department <- SAE_2024 %>%
-#   group_by(dep_number) %>%
-#   summarise(avg_patients_per_doctor = mean(patients_per_doctor_win, na.rm = TRUE))
+# Winsorize the patients_per_doctor variable at 99%
+SAE_2024 <- SAE_2024 %>%
+  mutate(patients_per_doctor_win = ifelse(
+    patients_per_doctor > quantile(patients_per_doctor, 0.99, na.rm = TRUE),
+    quantile(patients_per_doctor, 0.99, na.rm = TRUE),
+    patients_per_doctor
+  ))
+
+# Update the ratio_by_department dataset with the winsorized variable
+rm(ratio_by_department)
+ratio_by_department <- SAE_2024 %>%
+  group_by(dep_number) %>%
+  summarise(avg_patients_per_doctor = mean(patients_per_doctor_win, na.rm = TRUE))
 ```
 
 ```{r}
