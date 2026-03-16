@@ -1,4 +1,4 @@
-## Shortages of Medical Personnel in Emergency Departments and Unexpected Closures (DREES – Policy in Action 2025/26)
+## Emergency Department Closures and Staffing Shortages in France (DREES – Policy in Action 2025/26)
 
 The project investigates how staffing levels in French emergency departments relate to partial or full closures, using administrative data (SAE, Enquête Urgences, RPU) and a newly built Emergency Department Closures Database (EDCD) assisted by an LLM-based web collection pipeline.
 
@@ -16,34 +16,35 @@ Deliverables:
 ```
 PiA-DREES-2025/
 │
-├── README.md                <- Overview of the project, data, and usage.
-├── LICENSE                  <- Repository license (default: MIT).
-├── requirements.txt          <- Python dependencies for reproducibility.
+├── README.md                <- Overview of the project, pipeline, and repository structure.
+├── LICENSE                  <- Repository license.
+├── enquete_analysis.Rproj   <- RStudio project configuration.
 │
 ├── data/
-│   ├── raw/                 <- Original datasets (SAE, Urgences, RPU, ARS/EDCD).
-│   ├── intermediate/        <- Cleaned or merged datasets.
-│   └── processed/           <- Final validated datasets ready for analysis.
+│   ├── raw/                 <- Original datasets (SAE administrative data, population data, geographic files).
+│   ├── intermediate/        <- Intermediate outputs generated during the EDCD pipeline (web retrieval and LLM extraction).
+│   │   ├── raw_edcd_database_atomic.jsonl
+│   │   └── llm_output.jsonl
+│   └── processed/           <- Cleaned datasets used for analysis.
 │
 ├── docs/
-│   ├── meeting_notes/       <- Meeting summaries and project documentation.
-│   └── examples/            <- Jupyter notebooks showing how to use the code.
+│   ├── admin/               <- Administrative documents and Policy-in-Action project material.
+│   ├── examples/            <- Example documentation and usage notes.
+│   └── SAE_2024/            <- Documentation and metadata for the SAE hospital dataset.
 │
-├── src/                     <- Core code for data processing and analysis.
-│   ├── exploratory/         <- Exploratory data analysis and initial checks.
-│   ├── features/            <- Scripts to generate derived variables (ratios, indicators).
-│   ├── models/              <- Statistical models, regressions, and risk analysis.
-│   └── validation/          <- Scripts for cross-checks (EDCD vs RPU vs Urgences).
+├── edcd_pipeline/           <- Notebooks implementing the EDCD data collection pipeline.
+│   ├── information_retrieval.ipynb   <- Web search pipeline using Tavily.
+│   ├── data_collection.ipynb         <- LLM extraction pipeline using Mistral-7B.
+│   └── example/                      <- Example notebook demonstrating the web retrieval process.
 │
-├── reports/
-│   ├── figures/             <- Plots and visualizations.
-│   ├── tables/              <- Exported summary tables.
-│   └── outputs/             <- Generated reports (PDF, HTML, LaTeX).
+├── src/                     <- Scripts for data cleaning and statistical analysis.
+│   ├── code_SAE_2024/       <- RMarkdown scripts for cleaning and analyzing the SAE 2024 dataset.
+│   ├── enquete_urgences/    <- Scripts for emergency department survey analysis.
+│   └── sae/                 <- Legacy scripts for SAE 2014 data processing.
 │
-├── edcd_pipeline/           <- LLM-assisted data collection pipeline.
-│   ├── scraper/             <- Scripts to query ARS websites and extract closure info.
-│   ├── parser/              <- Scripts to clean and structure extracted text.
-│   └── utils/               <- Helper functions (e.g., validation, logging).
+├── results/
+│   └── SAE_2024/            <- Figures and visual outputs generated during the SAE analysis.
 │
-└── app/                     <- (Optional) Dash or Streamlit app for visual exploration.
+└── presentations/           <- Project presentation materials.
+    └── Staffing_Shortages_and_Emergency_Department_Closures_in_France.pdf 
 ```
