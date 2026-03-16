@@ -89,6 +89,25 @@ type_counts
 
 We map those proportions into pie charts.
 
+```{r}
+# Create regulation label variable
+temp <- SAE_2024 %>%
+  mutate(regulation_label = case_when(
+    regulation == 3 ~ "Yes, all the time",
+    regulation == 2 ~ "Yes, part of the time",
+    regulation == 1 ~ "No",
+    TRUE ~ "NA"
+  )) %>%
+  select(establishment_name, regulation_label, regulation)
+
+temps_reg_counts <- temp %>%
+  count(regulation_label) %>%
+  mutate(percentage = n / sum(n) * 100)
+
+# Export temp
+write_csv2(temp, "../data/processed/SAE_temp.csv")
+```
+
 1. Status
 
 ```{r, echo = FALSE}

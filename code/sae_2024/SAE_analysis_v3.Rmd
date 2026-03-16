@@ -1,0 +1,371 @@
+---
+title: "SAE_analysis 3rd version"
+author: "Louise Gatty"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+# Set up ----
+
+```{r setup, message=FALSE}
+rm(list=ls())
+
+path = "/Users/Louise/Desktop/Master/M1/PiA-DREES-local/code"
+setwd(path)
+
+# Load necessary libraries ----
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(readr)
+library(httr)
+library(readr)
+library(janitor)
+library(tidyverse)
+library(stringr)
+library(purrr)
+library(ggplot2)
+library(sf)
+library(viridis)
+library(scales)
+library(patchwork)
+library(rlang)
+library(gt)
+```
+
+# Import datasets ----
+
+```{r cars, message=FALSE}
+# SAE data
+SAE_2024 <- read_csv2("../data/processed/SAE_final_2024.csv")
+
+# ID data
+id_raw <- read_csv2("../data/raw/SAE_2024/ID_2024r.csv")
+
+# Geographical data
+communes <- st_read("../data/raw/communes-1000m.geojson")
+departements_map <- st_read("../data/raw/departements.geojson")
+
+# Enquete Urgences data
+enquete_urgences <- read_csv2("../data/raw/enquete_urgences.csv")
+```
+
+```{r}
+# Select useful variables in id
+id_raw <- id_raw %>%
+  dplyr::select(fi, COMINSEE)
+
+# Merge with the main dataset
+SAE_2024 <- SAE_2024 %>%
+  left_join(id_raw, by = c("finess" = "fi"))
+
+# Select useful variables in communes
+communes <- communes %>%
+  dplyr::select(code, geometry)
+
+# Merge with the geographical data
+SAE_2024 <- SAE_2024 %>%
+  left_join(communes, by = c("COMINSEE" = "code"))
+
+# Count percentage of "MULTIPOLYGON EMPTY" in geometry
+empty_geom_percentage <- sum(st_is_empty(SAE_2024$geometry)) / nrow(SAE_2024) * 100
+
+# Select useful variables in enquete urgences
+enquete_urgences <- enquete_urgences %>%
+  dplyr::select(FINESS, DENSITE_GENERALISTES_LIB)
+
+# Merge with the main dataset
+SAE_2024 <- SAE_2024 %>%
+  left_join(enquete_urgences, by = c("finess" = "FINESS"))
+```
+
+# Descriptive statistics ----
+
+```{r}
+# Add the number of liberal physicians to the etp
+SAE_2024 <- SAE_2024 %>%
+  mutate(
+    # Convert liberals number to ETP
+    etp_liberals = number_physicians_liberal,
+    # Sum the ETP of employed physicians and liberals
+    etp_total_combine = etp_physicians_empl_emergency + etp_liberals,
+  )
+
+# Hospital 570026682 seems to be an outlier, replace etp_total_combine by the median
+SAE_2024 <- SAE_2024 %>%
+  mutate(etp_total_combine = ifelse(finess == "570026682", median(etp_total_combine, na.rm = TRUE), etp_total_combine))
+
+# Count percentage of NA
+na_percentage <- sum(is.na(SAE_2024$etp_total_combine)) / nrow(SAE_2024) * 100
+na_percentage_empl <- sum(is.na(SAE_2024$etp_physicians_empl_emergency)) / nrow(SAE_2024) * 100
+```
+
+
+
+```{r}
+# Plot the density function of etp_total_combine (add median vertical line)
+ggplot(SAE_2024, aes(x = etp_total_combine)) +
+  geom_density(fill = "steelblue", alpha = 0.6) +
+  geom_vline(xintercept = median(SAE_2024$etp_total_combine, na.rm = TRUE), linetype = "dashed", color = "red") +
+  labs(title = "Density of the Number of Doctors in Emergency Services",
+       x = "Number of Doctors (ETP)",
+       y = "Density") +
+  theme_minimal()
+
+# Median ETP
+median_etp <- median(SAE_2024$etp_total_combine, na.rm = TRUE)
+
+# Export the plot
+ggsave("../results/Final_pres/doctors_density.png", width = 10, height = 8)
+```
+
+```{r}
+# Compute density to find the mode (value with the highest density)
+density_data <- density(SAE_2024$etp_total_combine, na.rm = TRUE)
+mode_etp <- density_data$x[which.max(density_data$y)]
+median_etp <- median(SAE_2024$etp_total_combine, na.rm = TRUE)
+
+# Graph with both median and mode
+ggplot(SAE_2024, aes(x = etp_total_combine)) +
+  geom_density(fill = "steelblue", alpha = 0.6) +
+  # Median line
+  geom_vline(xintercept = median(SAE_2024$etp_total_combine, na.rm = TRUE), 
+             linetype = "dashed", color = "red") +
+  # Mode line
+  geom_vline(xintercept = mode_valeur, 
+             linetype = "dashed", color = "darkgreen") +
+  labs(title = "Density of the Number of Doctors in Emergency Services",
+       x = "Number of Doctors (ETP)",
+       y = "Density") +
+  theme_minimal()
+
+# Export the plot
+ggsave("../results/Final_pres/doctors_density.png", width = 10, height = 8)
+```
+
+## Point map
+
+We want to have an idea of whether the hospitals with few doctors are concentrated in specific areas of France, or if they are spread out across the country.
+
+```{r}
+# Convert SAE_2024 to sf object
+hospitals_clean <- SAE_2024 %>%
+  st_as_sf() %>% 
+  st_transform(2154) %>% # Project to meters
+  filter(!st_is_empty(geometry) & !is.na(etp_total_combine)) %>% 
+  st_make_valid() %>% 
+  st_centroid()
+
+# Plot (remove the coordinates axes and gridlines for a cleaner look)
+etp_map <-  ggplot() +
+  geom_sf(data = st_transform(departements_map, 2154), fill = "white", color = "gray60") +
+  geom_sf(data = hospitals_clean, aes(color = etp_total_combine), size = 2, shape = 3) +
+  scale_color_viridis_c(option = "magma", direction = -1, name = "Number of Doctors (ETP)") +
+  coord_sf(datum = NA) + # Use the projected CRS for the map view
+  theme_minimal() +
+  theme(
+    # Suppress axes
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    axis.ticks = element_blank(),
+    # Suppress gridlines
+    panel.grid = element_blank(),
+    # Suppress panel border
+    panel.border = element_blank()
+  ) +
+  # Add title (centered)
+  labs(title = "Geographical Distribution of Emergency Services in France")
+
+# Export
+ggsave("../results/Final_pres/doctors_point_map.png", etp_map, width = 10, height = 8)
+```
+
+Zoom-in on Ile-de-France for better readability.
+
+```{r}
+# Zoom in on ile de france (region_number = 11)
+hospitals_idf <-  hospitals_clean %>%
+  filter(region_number == 11)
+
+idf_map <- departements_map %>%
+  filter(substr(code, 1, 2) %in% c("75", "77", "78", "91", "92", "93", "94", "95"))
+
+# Plot
+etp_map_idf <-  ggplot() +
+  geom_sf(data = st_transform(idf_map, 2154), fill = "white", color = "gray60") +
+  geom_sf(data = hospitals_idf, aes(color = etp_total_combine), size = 2, shape = 3) +
+  scale_color_viridis_c(option = "magma", direction = -1, name = "Number of Doctors (ETP)") +
+  coord_sf(datum = NA) + 
+  theme_minimal() +
+  theme(
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid = element_blank(),
+    panel.border = element_blank()
+  ) +
+  labs(title = "Geographical Distribution of Emergency Services in Île-de-France")
+
+# Export
+ggsave("../results/Final_pres/doctors_point_map_idf.png", etp_map_idf, width = 10, height = 8)
+```
+
+
+## Correlation between number of doctors and other dimensions
+
+Juridical status
+
+```{r}
+# Boxplot of number of doctors by juridical status
+ggplot(SAE_2024, aes(x = juridical_status, y = etp_total_combine, fill = juridical_status)) +
+  geom_boxplot(fill = "steelblue") +
+  labs(title = "Distribution of the Number of Doctors by Juridical Status",
+       x = "Juridical Status",
+       y = "Number of Doctors (ETP)") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+# Export
+ggsave("../results/Final_pres/doctors_js.png", width = 10, height = 8)
+
+# Anova test to check if the differences in the number of doctors across juridical status are statistically significant
+anova_result <- aov(etp_physicians_empl_emergency ~ juridical_status, data = SAE_2024)
+```
+
+Type
+
+```{r}
+# Boxplot of number of doctors by type of emergency service (add labels to the x axis)
+SAE_2024 <- SAE_2024 %>%
+  mutate(emergency_type_label = case_when(
+    emergency_type == 1 ~ "Pediatric",
+    emergency_type == 2 ~ "General",
+    emergency_type == 3 ~ "Both",
+    TRUE ~ "NA"
+  ))
+
+ggplot(SAE_2024, aes(x = emergency_type_label, y = etp_total_combine)) +
+  geom_boxplot(fill = "steelblue") +
+  labs(title = "Distribution of the Number of Doctors by Type of Emergency Service",
+       x = "Type of Emergency Service",
+       y = "Number of Doctors (ETP)") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+# Export
+ggsave("../results/Final_pres/doctors_type.png", width = 10, height = 8)
+
+# Anova test to check if the differences in the number of doctors across types of emergency service are statistically significant
+anova_result_type <- aov(etp_physicians_empl_emergency ~ as.factor(emergency_type), data = SAE_2024)
+```
+Size of the hospital in terms of number of visits
+
+```{r}
+# Scatter plot of number of doctors by number of visits
+ggplot(SAE_2024, aes(x = total_emergency_visits_win, y = etp_total_combine)) +
+  geom_point(color = "steelblue", alpha = 0.6) +
+  scale_x_continuous(labels = comma) +
+  labs(title = "Correlation between the Number of Doctors and the Number of Visits",
+       x = "Number of Visits in Emergency Services",
+       y = "Number of Doctors (ETP)") +
+  theme_minimal()
+
+# Export
+ggsave("../results/Final_pres/doctors_visits.png", width = 10, height = 8)
+
+
+# Correlation test to check if the correlation between the number of doctors and the number of visits is statistically significant
+cor_test <- cor.test(SAE_2024$total_emergency_visits_win, SAE_2024$etp_total_combine, method = "pearson")
+```
+
+Densité de médecins généralistes libéraux
+
+```{r}
+# Scatter plot of number of doctors by density of liberals
+ggplot(SAE_2024, aes(x = as.numeric(DENSITE_GENERALISTES_LIB), y = etp_total_combine)) +
+  geom_point(alpha = 0.6) +
+  labs(title = "Correlation between the Number of Doctors and the Density of Liberal General Practitioners",
+       x = "Density of Liberal General Practitionners in the Department",
+       y = "Number of Doctors (ETP)") +
+  theme_minimal()
+
+# Correlation test to check if the correlation between the number of doctors and the density
+cor_test_lib <- cor.test(as.numeric(SAE_2024$DENSITE_GENERALISTES_LIB), SAE_2024$etp_total_combine, method = "pearson")
+cor_test_lib
+
+```
+NOT SIGNIF. DON'T INCLUDE
+
+
+
+The 3 first results are all stat signif, highlighting the necesity to control for them in the regression.
+
+```{r}
+# 1. Define helper to extract data from ANOVA and Correlation
+anova_res_status <- summary(anova_result)[[1]]
+anova_res_type <- summary(anova_result_type)[[1]]
+
+# 2. Build the data frame
+results_table <- data.frame(
+  Variable = c("Juridical Status", "Emergency Type", "Number of Visits"),
+  Test_Type = c("ANOVA", "ANOVA", "Correlation"),
+  F_Stat = c(round(anova_res_status$`F value`[1], 2), round(anova_res_type$`F value`[1], 2), NA),
+  Pearson_r = c(NA, NA, round(cor_test$estimate, 3)),
+  P_Value = c(anova_res_status$`Pr(>F)`[1], anova_res_type$`Pr(>F)`[1], cor_test$p.value)
+)
+
+# 3. Create the gt table
+results_table %>%
+  gt() %>%
+  tab_header(
+    title = "Statistical Analysis Summary",
+    subtitle = "Drivers of ED Physician Staffing"
+  ) %>%
+  cols_label(
+    Variable = "Dimension",
+    Test_Type = "Test",
+    F_Stat = "F-Statistic",
+    Pearson_r = "Pearson r",
+    P_Value = "p-value"
+  ) %>%
+  # Replace NAs with a dash for cleaner presentation
+  sub_missing(columns = everything(), missing_text = "-") %>%
+  fmt_number(columns = c(F_Stat, Pearson_r, P_Value), decimals = 4) %>%
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_column_labels(everything())
+  ) %>%
+  # Highlight significant results
+  tab_style(
+    style = cell_fill(color = "white"),
+    locations = cells_body(rows = P_Value < 0.05)
+  )
+
+# Export the table as a PNG image
+results_table %>%
+  gt() %>%
+  tab_header(
+    title = "Statistical Analysis Summary",
+    subtitle = "Drivers of ED Physician Staffing"
+  ) %>%
+  cols_label(
+    Variable = "Dimension",
+    Test_Type = "Test",
+    F_Stat = "F-Statistic",
+    Pearson_r = "Pearson r",
+    P_Value = "p-value"
+  ) %>%
+  # Replace NAs with a dash for cleaner presentation
+  sub_missing(columns = everything(), missing_text = "-") %>%
+  fmt_number(columns = c(F_Stat, Pearson_r, P_Value), decimals = 4) %>%
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_column_labels(everything())
+  ) %>%
+  # Highlight significant results
+  tab_style(
+    style = cell_fill(color = "white"),
+    locations = cells_body(rows = P_Value < 0.05)
+  ) %>%
+  gtsave("../results/Final_pres/stat_analysis_summary.png")
+```
