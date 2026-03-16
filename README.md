@@ -1,4 +1,4 @@
-## Shortages of Medical Personnel in Emergency Departments and Unexpected Closures (DREES – Policy in Action 2025/26)
+## Emergency Department Closures and Staffing Shortages in France (DREES – Policy in Action 2025/26)
 
 The project investigates how staffing levels in French emergency departments relate to partial or full closures, using administrative data (SAE, Enquête Urgences, RPU) and a newly built Emergency Department Closures Database (EDCD) assisted by an LLM-based web collection pipeline.
 
