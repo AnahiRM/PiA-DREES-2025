@@ -22,9 +22,10 @@ PiA-DREES-2025/
 │
 ├── data/
 │   ├── raw/                 <- Original datasets (SAE administrative data, population data, geographic files).
-│   ├── intermediate/        <- Intermediate outputs generated during the EDCD pipeline (web retrieval and LLM extraction).
+│   ├── intermediate/        <- Intermediate outputs generated during the EDCD pipeline (web retrieval and LLM extraction) and the SAE data cleaning.
 │   │   ├── raw_edcd_database_atomic.jsonl
-│   │   └── llm_output.jsonl
+│   │   ├── llm_output.jsonl
+│   │   └── sae_2024         <- Intermediate datasets generated during data processing.
 │   └── processed/           <- Cleaned datasets used for analysis.
 │
 ├── docs/
@@ -37,13 +38,14 @@ PiA-DREES-2025/
 │   ├── data_collection.ipynb         <- LLM extraction pipeline using Mistral-7B.
 │   └── example/                      <- Example notebook demonstrating the web retrieval process.
 │
-├── src/                     <- Scripts for data cleaning and statistical analysis.
-│   ├── code_SAE_2024/       <- RMarkdown scripts for cleaning and analyzing the SAE 2024 dataset.
-│   ├── enquete_urgences/    <- Scripts for emergency department survey analysis.
-│   └── sae/                 <- Legacy scripts for SAE 2014 data processing.
+├── code/                    <- Scripts for data cleaning and statistical analysis.
+│   ├── sae_2024             <- RMarkdown scripts for cleaning and analyzing the SAE 2024 dataset.
+│   ├── sae_2014             <- R scripts for SAE 2014 data processing.
+│   └── enquete_urgences/    <- Scripts for emergency department survey analysis.
 │
-├── results/
-│   └── SAE_2024/            <- Figures and visual outputs generated during the SAE analysis.
+├── outputs/
+│   ├── SAE_2024_v2           <- Figures and visual outputs generated during the 2nd version of the SAE analysis.
+│   └── SAE_2024_v3           <- Figures and visual outputs generated during the 3rd version of the SAE analysis.
 │
 └── presentations/           <- Project presentation materials.
     └── Staffing_Shortages_and_Emergency_Department_Closures_in_France.pdf 
