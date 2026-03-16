@@ -70,13 +70,3 @@ Extracting structured information from public reports presents several challenge
 - generative models may produce **inconsistent output formats**
 
 These challenges motivate the use of **schema-constrained extraction or specialized information extraction models** in future iterations of the pipeline.
-
----
-
-# Infrastructure
-
-The extraction pipeline currently runs on:
-
-- **Model:** Mistral-7B-Instruct  
-- **Inference engine:** vLLM  
-- **Hardware:** NVIDIA RTX A5000 GPU
