@@ -132,7 +132,7 @@ ggplot(SAE_2024, aes(x = etp_total_combine)) +
   geom_vline(xintercept = median(SAE_2024$etp_total_combine, na.rm = TRUE), 
              linetype = "dashed", color = "red") +
   # Mode line
-  geom_vline(xintercept = mode_valeur, 
+  geom_vline(xintercept = mode_etp, 
              linetype = "dashed", color = "darkgreen") +
   labs(title = "Density of the Number of Doctors in Emergency Services",
        x = "Number of Doctors (ETP)",
@@ -141,6 +141,9 @@ ggplot(SAE_2024, aes(x = etp_total_combine)) +
 
 # Export the plot
 ggsave("../results/Final_pres/doctors_density.png", width = 10, height = 8)
+
+# Compute the percentage of the data that's below the mode
+percentage_below_mode <- sum(SAE_2024$etp_total_combine < mode_etp, na.rm = TRUE) / nrow(SAE_2024) * 100
 ```
 
 ## Point map
@@ -295,8 +298,6 @@ cor_test_lib
 
 ```
 NOT SIGNIF. DON'T INCLUDE
-
-
 
 The 3 first results are all stat signif, highlighting the necesity to control for them in the regression.
 
